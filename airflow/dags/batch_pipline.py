@@ -37,14 +37,12 @@ from common.sensors.docling_sensor import DoclingBatchStatusSensor
 from common.sensors.mineru_sensor import MineruBatchStatusSensor
 from pendulum import datetime
 
-MINERU_URL = "http://mineru-api:8000"
 RAG_DATA_BUCKET = "ragfiles"
 DEV_DATA = "dev_data"
 DEV_DATA_MINERU_MD = f"{DEV_DATA}/mineru_md"
-DEV_DATA_DOCLING_JSON = f"{DEV_DATA}/docking_jsons"
+DEV_DATA_DOCLING_JSON = f"{DEV_DATA}/docling_jsons"
 SUP_FORMATS = ["pdf/"]
-BATCH_SIZE = 4
-MAX_MINERU_WIRKERS = 1
+BATCH_SIZE = 16
 
 QDRANT_URL = "http://qdrant:6333"
 QDRANT_COLLECTION = "construction_docs"
@@ -74,7 +72,7 @@ def load_to_s3(
     filepath: str | list[str],
     bucket_name: str = RAG_DATA_BUCKET,
     prefix: str = DEV_DATA_MINERU_MD,
-) -> str | None:
+) -> lst[str] | None:
     """
     Upload one or more local files to MinIO (S3-compatible storage).
 
@@ -101,17 +99,20 @@ def load_to_s3(
     """
     filepath = filepath if isinstance(filepath, list) else [filepath]
     out = ""
+    s3_keys = []
     try:
         for patch in filepath:
+            s3_key = f"{DEV_DATA_MINERU_MD}/{Path(patch).name}"
             hook.load_file(
                 filename=patch,
                 bucket_name=bucket_name,
                 key=f"{prefix}/{patch.split('/')[-1]}",
                 replace=True,
             )
-            out += f"\\n{patch}"
+            out += f"\n{patch}"
+            s3_keys.append(s3_key)
         logging.info(f">> File loaded to minio: {out}")
-        return out
+        return s3_keys
     except Exception as ex:
         logging.error(f">> Unknown error loading data to minio: {ex}")
 
@@ -169,9 +170,9 @@ def execute_refs(text: str) -> list[str]:
         Returns an empty list when no patterns are found.
     """
     patterns = [
-        r"[Сс][Пп]\s*\d+[\.\d]*",  # СП 63.13330
-        r"[СсГг][НнОо][ИиСс][ПпТт]\s*[\d\.\-]+",  # СНиП, ГОСТ
-        r"[Пп]\.?\s*\d+[\.\d]*",  # п. 3.45
+        r"[Сс][Пп]\s*\d+[.\d]*"  # СП 63.13330
+        r"[СсГг][НнОо][ИиСс][ПпТт]\s*[\d.\-]+"  # СНиП, ГОСТ
+        r"[Пп]\.?\s*\d+[\.\d]*"  # п. 3.45
         r"[Тт]абл(?:ица|\.)\s*\d+",  # таблица 7 / табл. 7
         r"[Рр]ис(?:унок|\.)\s*\d+",  # рисунок 3
         r"[Пп]риложени[еяй]\s*[А-ЯA-Z\d]+",  # приложение А
@@ -188,14 +189,14 @@ def execute_refs(text: str) -> list[str]:
 
 
 @dag(
-    dag_id="batch_pipline",
+    dag_id="batch_pipeline",
     start_date=datetime(2026, 1, 1),
     schedule=None,
     catchup=False,
     tags=["data_pipeline"],
     doc_md=__doc__,
 )
-def batch_pipline():
+def batch_pipeline():
     """Batch document processing pipeline — see module docstring for full description."""
 
     # ------------------------------------------------------------------------------------------------
@@ -322,7 +323,7 @@ def batch_pipline():
         return to_process
 
     @task
-    def ckeck_mineru_health() -> int:
+    def check_mineru_health() -> int:
         """Verify that the MinerU API is reachable and healthy"""
         hook_mineru = HttpHook(method="GET", http_conn_id="mineru")
         req = hook_mineru.run(endpoint="/health")
@@ -367,6 +368,7 @@ def batch_pipline():
     @task()
     def batch_mineru_submit(
         health_status: int,
+        qerant_status: str,
         file_keys: list[str],
         bucket_name: str,
     ) -> list[str]:
@@ -399,6 +401,9 @@ def batch_pipline():
         """
         if health_status != 200:
             raise ValueError(f"MinerU unhealthy: {health_status}")
+
+        if not qerant_status:
+            raise ValueError("Qdrant unhealthy")
 
         hook_minio = S3Hook(aws_conn_id="minio")
         task_ids: list[str] = []
@@ -507,8 +512,8 @@ def batch_pipline():
             can consume the local files without a second download.
         """
         hook = S3Hook(aws_conn_id="minio")
-        load_to_s3(hook, mineru_result, prefix=DEV_DATA_MINERU_MD)
-        return mineru_result
+        s3_keys = load_to_s3(hook, mineru_result, prefix=DEV_DATA_MINERU_MD)
+        return s3_keys
 
     # ------------------------------------------------------------------------------------------------
     # 6. Chanking
@@ -604,7 +609,7 @@ def batch_pipline():
                 chunk_task_ids.append(task_id)
                 logging.info(f">>> Chunk submit: {path.name} -> task_id: {task_id}")
 
-            logging.info(f">>> Chunk batch submitted: {chunk_task_ids}")
+        logging.info(f">>> Chunk batch submitted: {chunk_task_ids}")
 
         return chunk_task_ids
 
@@ -665,7 +670,7 @@ def batch_pipline():
                 Разделить текстовые чанки и таблицы
                 Таблицы хранятся как отдельные точки в Qdrant - это позволяет
                 искать по ним отдельно (фильтр is_table=True) и не терять
-                нормативные значения внутри усреднённого текстового вектора.
+                нормативные значения внутри усредненного текстового вектора.
                 """
                 text_chunks = [c for c in doc_chunks if c.get("type") != "table"]
                 table_chunks = [c for c in doc_chunks if c.get("type") == "table"]
@@ -874,6 +879,8 @@ def batch_pipline():
                                 "filename": chunk.get(
                                     "filename", path.stem
                                 ),  # для фильтрации по файлу
+                                "is_table": chunk.get("is_table", False),
+                                "refs": chunk.get("refs", []),
                             },
                         )
                     )
@@ -897,67 +904,68 @@ def batch_pipline():
     # Graph
     # ==========================================================
     # ----- 0) Docling single precess -----
-    # md_loaded = single_docling()
-    # docling_task_ids = docling_chunk_submit.partial(bucket_name=RAG_DATA_BUCKET).expand(
-    #     mineru_result=md_loaded
-    # )
-
-    # docling_wait = DoclingBatchStatusSensor.partial(
-    #     task_id="wait_docling_batch",
-    #     docling_conn_id="docling",
-    #     poll_interval=10,
-    # ).expand(external_task_ids=docling_task_ids)
-    # docling_chunks = save_docling_results.expand(docling_task_ids=docling_wait.output)
-    # create_qdrant_collection() >> save_to_qdrant.expand(
-    #     docling_json_paths=docling_chunks
-    # )
-    # ------------------------------------------------------------
-    # ----- 1) Discovery -----
-    get_buckets_data()
-    mineru_health = ckeck_mineru_health()
-    files_task = list_files_to_process(bucket=RAG_DATA_BUCKET)
-
-    # ----- 2) Split into batches of BATCH_SIZE -----
-    file_batches = create_file_batches(files_task)
-    # [["f1","f2",...,"f8"], ["f9","f10",...], ...]
-
-    # ----- 3) Submit each batch to MinerU (one dynamic task per batch) -----
-    mineru_task_ids = batch_mineru_submit.partial(
-        bucket_name=RAG_DATA_BUCKET,
-        health_status=mineru_health,
-    ).expand(file_keys=file_batches)
-    # [["tid1","tid2",...], ["tid9",...], ...]
-
-    # ----- 4) Deferrable sensor - async wait for each batch (frees workers) -----
-    mineru_wait = MineruBatchStatusSensor.partial(
-        task_id="wait_mineru_batch",
-        mineru_conn_id="mineru",
-        poll_interval=60,
-    ).expand(external_task_ids=mineru_task_ids)
-    # output: [["tid1","tid2",...], ["tid9",...], ...]
-
-    # ----- 5) Save .md files per batch -----
-    md_files = save_mineru_results.expand(mineru_task_ids=mineru_wait.output)
-
-    # ----- 6) Upload .md to MinIO per batch -----
-    md_loaded = load_md_to_minio.expand(mineru_result=md_files)
-
-    # ----- 7) Chanking -----
+    md_loaded = single_docling()
     docling_task_ids = docling_chunk_submit.partial(bucket_name=RAG_DATA_BUCKET).expand(
         mineru_result=md_loaded
     )
 
-    # ----- 8) Deferrable sensor - async wait for each batch (frees workers) -----
     docling_wait = DoclingBatchStatusSensor.partial(
         task_id="wait_docling_batch",
         docling_conn_id="docling",
-        poll_interval=30,
+        poll_interval=10,
     ).expand(external_task_ids=docling_task_ids)
-
-    # ----- 6) Upload .jsom to MinIO per batch -----
     docling_chunks = save_docling_results.expand(docling_task_ids=docling_wait.output)
-    # ----- 8) Qdrant  -----
-    save_to_qdrant.expand(docling_json_paths=docling_chunks)
+    create_qdrant_collection() >> save_to_qdrant.expand(
+        docling_json_paths=docling_chunks
+    )
+    # ------------------------------------------------------------
+    # ----- 1) Discovery -----
+    # get_buckets_data()
+    # mineru_health = check_mineru_health()
+    # qdrant_health = create_qdrant_collection()
+    # files_task = list_files_to_process(bucket=RAG_DATA_BUCKET)
+    # # ----- 2) Split into batches of BATCH_SIZE -----
+    # file_batches = create_file_batches(files_task)
+    # # [["f1","f2",...,"f8"], ["f9","f10",...], ...]
+
+    # # ----- 3) Submit each batch to MinerU (one dynamic task per batch) -----
+    # mineru_task_ids = batch_mineru_submit.partial(
+    #     bucket_name=RAG_DATA_BUCKET,
+    #     health_status=mineru_health,
+    #     qerant_status=qdrant_health,
+    # ).expand(file_keys=file_batches)
+    # # [["tid1","tid2",...], ["tid9",...], ...]
+
+    # # ----- 4) Deferrable sensor - async wait for each batch (frees workers) -----
+    # mineru_wait = MineruBatchStatusSensor.partial(
+    #     task_id="wait_mineru_batch",
+    #     mineru_conn_id="mineru",
+    #     poll_interval=60,
+    # ).expand(external_task_ids=mineru_task_ids)
+    # # output: [["tid1","tid2",...], ["tid9",...], ...]
+
+    # # ----- 5) Save .md files per batch -----
+    # md_files = save_mineru_results.expand(mineru_task_ids=mineru_wait.output)
+
+    # # ----- 6) Upload .md to MinIO per batch -----
+    # md_loaded = load_md_to_minio.expand(mineru_result=md_files)
+
+    # # ----- 7) Chanking -----
+    # docling_task_ids = docling_chunk_submit.partial(bucket_name=RAG_DATA_BUCKET).expand(
+    #     mineru_result=md_loaded
+    # )
+
+    # # ----- 8) Deferrable sensor - async wait for each batch (frees workers) -----
+    # docling_wait = DoclingBatchStatusSensor.partial(
+    #     task_id="wait_docling_batch",
+    #     docling_conn_id="docling",
+    #     poll_interval=30,
+    # ).expand(external_task_ids=docling_task_ids)
+
+    # # ----- 6) Upload .jsom to MinIO per batch -----
+    # docling_chunks = save_docling_results.expand(docling_task_ids=docling_wait.output)
+    # # ----- 8) Qdrant  -----
+    # save_to_qdrant.expand(docling_json_paths=docling_chunks)
 
 
-batch_pipline()
+batch_pipeline()
