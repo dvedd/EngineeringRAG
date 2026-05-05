@@ -27,14 +27,17 @@ import logging
 import re
 import uuid
 from collections import defaultdict
+from functools import lru_cache
 from pathlib import Path
 
 import requests
+import torch
 from airflow.providers.amazon.aws.hooks.s3 import S3Hook
 from airflow.providers.http.hooks.http import HttpHook
 from airflow.sdk import dag, task
 from common.sensors.docling_sensor import DoclingBatchStatusSensor
 from common.sensors.mineru_sensor import MineruBatchStatusSensor
+from fastembed import LateInteractionTextEmbedding, SparseTextEmbedding, TextEmbedding
 from pendulum import datetime
 
 RAG_DATA_BUCKET = "ragfiles"
@@ -49,8 +52,8 @@ QDRANT_COLLECTION = "construction_docs"
 QDRANT_DENSE_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 QDRANT_COLBERT_MODEL = "colbert-ir/colbertv2.0"
 QDRANT_VECTOR_SIZE = 384
-QDRANT_ENCODE_BATCH = 64
-QDRANT_UPSERT_BATCH = 64
+QDRANT_ENCODE_BATCH = 16
+QDRANT_UPSERT_BATCH = 32
 QDRANT_COLBERT_SIZE = 128
 
 
@@ -181,6 +184,27 @@ def execute_refs(text: str) -> list[str]:
     for pat in patterns:
         refs.extend(re.findall(pat, text))
     return list(set(refs))
+
+
+# _PROVIDERS = (
+#     ["CUDAExecutionProvider"] if torch.cuda.is_available() else ["CPUExecutionProvider"]
+# )
+PROVIDERS = ["CPUExecutionProvider"]
+
+
+@lru_cache(maxsize=1)
+def get_dense_model():
+    return TextEmbedding(QDRANT_DENSE_MODEL, providers=PROVIDERS)
+
+
+@lru_cache(maxsize=1)
+def get_sparse_model():
+    return SparseTextEmbedding("Qdrant/bm25")  # BM25 — CPU-only, памяти мало
+
+
+@lru_cache(maxsize=1)
+def get_colbert_model():
+    return LateInteractionTextEmbedding(QDRANT_COLBERT_MODEL, providers=PROVIDERS)
 
 
 # ============================================================
@@ -729,7 +753,7 @@ def batch_pipeline():
             VectorParams,
         )
 
-        client = QdrantClient(url=QDRANT_URL)
+        client = QdrantClient(url=QDRANT_URL, timeout=20)
 
         existing = {c.name for c in client.get_collections().collections}
         if QDRANT_COLLECTION in existing:
@@ -790,23 +814,20 @@ def batch_pipeline():
         int
             Total number of points upserted across all files.
         """
-        from fastembed import LateInteractionTextEmbedding, SparseTextEmbedding
+        import gc
+
+        import torch
         from qdrant_client import QdrantClient
         from qdrant_client.models import PointStruct, SparseVector
-        from sentence_transformers import SentenceTransformer
 
         client = QdrantClient(
             url=QDRANT_URL,
             timeout=120,
         )
 
-        dense_model = SentenceTransformer(
-            QDRANT_DENSE_MODEL
-        )  # Understands the meaning of the text and semantic similarity
-        sparse_model = SparseTextEmbedding(
-            "Qdrant/bm25"
-        )  # Exact lexical word matching, like a classic search
-        colbert_model = LateInteractionTextEmbedding(QDRANT_COLBERT_MODEL)
+        dense_model = get_dense_model()
+        sparse_model = get_sparse_model()
+        colbert_model = get_colbert_model()
         total_upserted = 0
 
         for json_path in docling_json_paths:
@@ -829,18 +850,12 @@ def batch_pipeline():
                 texts = [clean_chunk_text(c.get("text", "")) for c in enc_batch]
 
                 # ----- 2) Vectors -----
-                dense_vecs = dense_model.encode(
-                    texts,
-                    batch_size=QDRANT_ENCODE_BATCH,
-                    show_progress_bar=False,
-                    convert_to_numpy=True,
-                ).tolist()  # all-MiniLM-L6-v2, dim=384
-
-                sparse_vecs = list(sparse_model.embed(texts))
-
+                dense_vecs = list(dense_model.embed(texts))  # list[ndarray(384,)]
+                sparse_vecs = list(sparse_model.embed(texts))  # list[SparseEmbedding]
                 colbert_vecs = list(
                     colbert_model.embed(texts)
-                )  # list[ndarray(n_tokens, 128)] — рахмер матрицы разный для каждого чанка
+                )  # list[ndarray(n_tok, 128)]
+                # list[ndarray(n_tokens, 128)] — рахмер матрицы разный для каждого чанка
 
                 # ----- 3) Build PointStruct list -----
                 points: list[PointStruct] = []
@@ -860,11 +875,12 @@ def batch_pipeline():
                         PointStruct(
                             id=point_id,
                             vector={
-                                "dense": dense_vecs[i],
+                                "dense": dense_vecs[i].tolist(),
                                 "sparse": SparseVector(
                                     indices=sv.indices.tolist(),
                                     values=sv.values.tolist(),
-                                ),  # Matrix (n_tokens × 128): Qdrant: list[list[float]]
+                                ),
+                                # ColBERT: матрица (n_tokens × 128) → list[list[float]]
                                 "colbert": cv.tolist(),
                             },
                             payload={
@@ -874,7 +890,7 @@ def batch_pipeline():
                                 "chunk_index": chunk.get("chunk_index"),
                                 "headings": chunk.get(
                                     "headings", []
-                                ),  # для фильтрации по разделу
+                                ),  # оригинал для отображения
                                 "doc_items": chunk.get("doc_items", []),
                                 "filename": chunk.get(
                                     "filename", path.stem
@@ -895,6 +911,10 @@ def batch_pipeline():
                         f"enc_offset={enc_start},"
                         f"ups_offset={ups_start})"
                     )
+                del dense_vecs, sparse_vecs, colbert_vecs, points, texts, enc_batch
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
             logging.info(f">>> Done: {path.name}, running total={total_upserted}")
 

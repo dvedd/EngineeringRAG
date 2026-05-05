@@ -99,6 +99,11 @@ services:
         container_name: qdrant
         environment:
             - QDRANT__SERVICE__MAX_REQUEST_SIZE_MB=128
+            - QDRANT__STORAGE__PERFORMANCE__MAX_SEARCH_THREADS=4
+        deploy:
+            resources:
+                limits:
+                    memory: 6G
         restart: always
         ports:
             - "6333:6333"
@@ -255,6 +260,15 @@ services:
         environment:
             <<: *airflow-common-env
             DUMB_INIT_SETSID: "0"
+        deploy:
+            resources:
+                reservations:
+                    devices:
+                        - driver: nvidia
+                          device_ids: ["0"]
+                          capabilities: [gpu]
+                limits:
+                    memory: 12G
         healthcheck:
             test:
                 - "CMD-SHELL"

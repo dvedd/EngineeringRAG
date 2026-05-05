@@ -19,7 +19,7 @@ langchain-qdrant
 qdrant-client
 sentence_transformers
 fastembed
-
+onnxruntime-gpu
 # Utilities
 pyyaml
 click
