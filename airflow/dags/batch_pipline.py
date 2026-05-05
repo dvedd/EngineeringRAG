@@ -49,9 +49,10 @@ BATCH_SIZE = 16
 
 QDRANT_URL = "http://qdrant:6333"
 QDRANT_COLLECTION = "construction_docs"
-QDRANT_DENSE_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+QDRANT_DENSE_MODEL = "intfloat/multilingual-e5-large"
+# QDRANT_DENSE_MODEL = "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
 QDRANT_COLBERT_MODEL = "colbert-ir/colbertv2.0"
-QDRANT_VECTOR_SIZE = 384
+QDRANT_VECTOR_SIZE = 1024
 QDRANT_ENCODE_BATCH = 16
 QDRANT_UPSERT_BATCH = 32
 QDRANT_COLBERT_SIZE = 128
@@ -75,7 +76,7 @@ def load_to_s3(
     filepath: str | list[str],
     bucket_name: str = RAG_DATA_BUCKET,
     prefix: str = DEV_DATA_MINERU_MD,
-) -> lst[str] | None:
+) -> list[str] | None:
     """
     Upload one or more local files to MinIO (S3-compatible storage).
 
@@ -186,24 +187,23 @@ def execute_refs(text: str) -> list[str]:
     return list(set(refs))
 
 
-# _PROVIDERS = (
-#     ["CUDAExecutionProvider"] if torch.cuda.is_available() else ["CPUExecutionProvider"]
-# )
-PROVIDERS = ["CPUExecutionProvider"]
+PROVIDERS = (
+    ["CUDAExecutionProvider"] if torch.cuda.is_available() else ["CPUExecutionProvider"]
+)
 
 
 @lru_cache(maxsize=1)
-def get_dense_model():
+def get_dense_model() -> TextEmbedding:
     return TextEmbedding(QDRANT_DENSE_MODEL, providers=PROVIDERS)
 
 
 @lru_cache(maxsize=1)
-def get_sparse_model():
+def get_sparse_model() -> SparseTextEmbedding:
     return SparseTextEmbedding("Qdrant/bm25")  # BM25 — CPU-only, памяти мало
 
 
 @lru_cache(maxsize=1)
-def get_colbert_model():
+def get_colbert_model() -> LateInteractionTextEmbedding:
     return LateInteractionTextEmbedding(QDRANT_COLBERT_MODEL, providers=PROVIDERS)
 
 
@@ -820,6 +820,12 @@ def batch_pipeline():
         from qdrant_client import QdrantClient
         from qdrant_client.models import PointStruct, SparseVector
 
+        # Диагностика GPU внутри воркера
+        logging.info(f">>> CUDA available: {torch.cuda.is_available()}")
+        logging.info(f">>> PROVIDERS: {PROVIDERS}")
+        if torch.cuda.is_available():
+            logging.info(f">>> GPU: {torch.cuda.get_device_name(0)}")
+
         client = QdrantClient(
             url=QDRANT_URL,
             timeout=120,
@@ -847,7 +853,9 @@ def batch_pipeline():
             for enc_start in range(0, len(chunks), QDRANT_ENCODE_BATCH):
                 # ----- 1) Batching and Cheaning text into chanks -----
                 enc_batch = chunks[enc_start : enc_start + QDRANT_ENCODE_BATCH]
-                texts = [clean_chunk_text(c.get("text", "")) for c in enc_batch]
+                texts = [
+                    "passage: " + clean_chunk_text(c.get("text", "")) for c in enc_batch
+                ]
 
                 # ----- 2) Vectors -----
                 dense_vecs = list(dense_model.embed(texts))  # list[ndarray(384,)]

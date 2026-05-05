@@ -1,3 +1,8 @@
+# Vector DB
+qdrant-client
+sentence_transformers
+fastembed
+torch
 pendulum
 apache-airflow
 apache-airflow-providers-amazon
@@ -10,16 +15,11 @@ python-dotenv
 requests
 
 # LangChain
-langchain
-langchain-openai
-langchain-community
-langchain-qdrant
+#langchain
+#langchain-openai
+#langchain-community
+#langchain-qdrant
 
-# Vector DB
-qdrant-client
-sentence_transformers
-fastembed
-onnxruntime-gpu
 # Utilities
 pyyaml
 click

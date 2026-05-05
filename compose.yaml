@@ -257,18 +257,25 @@ services:
     airflow-worker:
         <<: *airflow-common
         command: celery worker
+        volumes:
+            - ./airflow/dags:/opt/airflow/dags
+            - ./airflow/logs:/opt/airflow/logs
+            - ./airflow/config:/opt/airflow/config
+            - ./airflow/plugins:/opt/airflow/plugins
+            - /usr/local/cuda/lib64:/usr/local/cuda/lib64:ro
         environment:
             <<: *airflow-common-env
             DUMB_INIT_SETSID: "0"
+            NVIDIA_VISIBLE_DEVICES: "all"
+            NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
+            LD_LIBRARY_PATH: "/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu"
         deploy:
             resources:
                 reservations:
                     devices:
                         - driver: nvidia
-                          device_ids: ["0"]
+                          count: all
                           capabilities: [gpu]
-                limits:
-                    memory: 12G
         healthcheck:
             test:
                 - "CMD-SHELL"
