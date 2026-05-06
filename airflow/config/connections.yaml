@@ -1,0 +1,25 @@
+minio:
+    conn_type: aws
+    login: minioadmin
+    password: minioadmin
+    extra:
+        endpoint_url: "http://minio:9000"
+        region_name: "us-east-1"
+
+mineru:
+    conn_type: http
+    host: mineru-api
+    port: 8000
+    schema: http
+
+docling:
+    conn_type: http
+    host: docling-serve
+    port: 5001
+    schema: http
+
+qdrant:
+    conn_type: http
+    host: qdrant
+    port: 6333
+    schema: http
