@@ -19,7 +19,6 @@ x-airflow-common: &airflow-common
 
         AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
         PYTHONPATH: /opt/airflow/dags:/opt/airflow/plugins:/opt/airflow
-
         # Connections
         # AIRFLOW_CONN_MINIO: "aws://minioadmin:minioadmin@minio:9000?endpoint_url=http%3A%2F%2Fminio%3A9000"
         # AIRFLOW_CONN_QDRANT: "http://@qdrant:6333"
@@ -325,7 +324,10 @@ services:
             - -c
             - |
                 mkdir -p /opt/airflow/{logs,dags,plugins,config}
-                chown -R "${AIRFLOW_UID:-50000}:0" /opt/airflow/
+                chown -R "${AIRFLOW_UID:-50000}:0" /opt/airflow/logs \
+                    /opt/airflow/dags \
+                    /opt/airflow/plugins \
+                    /opt/airflow/config
                 airflow db migrate
                 airflow users create \
                     --username airflow \
@@ -334,6 +336,7 @@ services:
                     --lastname Admin \
                     --role Admin \
                     --email airflow@example.com || true
+                airflow connections import /opt/airflow/config/connections.yaml
                 echo "Airflow init done."
         environment:
             <<: *airflow-common-env
