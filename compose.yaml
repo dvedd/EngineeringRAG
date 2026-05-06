@@ -1,8 +1,8 @@
 x-airflow-common: &airflow-common
-    build:
-        context: .
-        dockerfile: ./docker/AirFlow/Dockerfile
-    image: ${AIRFLOW_IMAGE_NAME:-custom_airflow:3.2.0-python3.12}
+    # build:
+    #     context: .
+    #     dockerfile: ./docker/AirFlow/Dockerfile
+    image: ${AIRFLOW_IMAGE_NAME:-airflow-3.2_cuda-12.9_python-3.12:latest}
     env_file:
         - .env
     environment: &airflow-common-env
@@ -159,6 +159,7 @@ services:
             test: ["CMD", "pg_isready", "-U", "superset"]
             interval: 5s
             retries: 5
+            start_period: 30s
         restart: unless-stopped
 
     superset:
@@ -202,6 +203,7 @@ services:
 
     airflow-apiserver:
         <<: *airflow-common
+        container_name: airflow-apiserver
         command: api-server
         ports:
             - "8080:8080"
@@ -224,6 +226,7 @@ services:
 
     airflow-scheduler:
         <<: *airflow-common
+        container_name: airflow-scheduler
         command: scheduler
         healthcheck:
             test: ["CMD", "curl", "--fail", "http://localhost:8974/health"]
@@ -238,6 +241,7 @@ services:
 
     airflow-dag-processor:
         <<: *airflow-common
+        container_name: airflow-dag-processor
         command: dag-processor
         healthcheck:
             test:
@@ -256,6 +260,7 @@ services:
 
     airflow-worker:
         <<: *airflow-common
+        container_name: airflow-worker
         command: celery worker
         volumes:
             - ./airflow/dags:/opt/airflow/dags
@@ -263,6 +268,8 @@ services:
             - ./airflow/config:/opt/airflow/config
             - ./airflow/plugins:/opt/airflow/plugins
             - /usr/local/cuda/lib64:/usr/local/cuda/lib64:ro
+            - ./data/fastembed_cache:/root/.cache/fastembed
+            - ./data/huggingface_cache:/root/.cache/huggingface
         environment:
             <<: *airflow-common-env
             DUMB_INIT_SETSID: "0"
@@ -293,6 +300,7 @@ services:
 
     airflow-triggerer:
         <<: *airflow-common
+        container_name: airflow-triggerer
         command: triggerer
         healthcheck:
             test:
@@ -311,23 +319,29 @@ services:
 
     airflow-init:
         <<: *airflow-common
+        container_name: airflow-init
         entrypoint: /bin/bash
         command:
             - -c
             - |
                 mkdir -p /opt/airflow/{logs,dags,plugins,config}
-                chown -R "${AIRFLOW_UID}:0" /opt/airflow/
-                exec /entrypoint airflow version
+                chown -R "${AIRFLOW_UID:-50000}:0" /opt/airflow/
+                airflow db migrate
+                airflow users create \
+                    --username airflow \
+                    --password airflow \
+                    --firstname Airflow \
+                    --lastname Admin \
+                    --role Admin \
+                    --email airflow@example.com || true
+                echo "Airflow init done."
         environment:
             <<: *airflow-common-env
-            _AIRFLOW_DB_MIGRATE: "true"
-            _AIRFLOW_WWW_USER_CREATE: "true"
-            _AIRFLOW_WWW_USER_USERNAME: airflow
-            _AIRFLOW_WWW_USER_PASSWORD: airflow
         user: "0:0"
 
     flower:
         <<: *airflow-common
+        container_name: airflow-flower
         command: celery flower
         ports:
             - "5555:5555"

@@ -4,7 +4,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     UV_SYSTEM_PYTHON=1 \
     UV_BREAK_SYSTEM_PACKAGES=1 \
-    AIRFLOW_HOME=/opt/airflow
+    AIRFLOW_HOME=/opt/airflow \
+    PATH="/usr/local/bin:/usr/bin:/bin:$PATH"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.12 \
@@ -41,3 +42,7 @@ RUN useradd -m -u ${AIRFLOW_UID} -s /bin/bash airflow \
 
 USER airflow
 WORKDIR /opt/airflow
+
+# Переопределение nnidea entrypoint
+ENTRYPOINT ["airflow"]
+CMD ["--help"]
