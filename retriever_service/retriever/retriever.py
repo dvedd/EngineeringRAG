@@ -4,11 +4,15 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Literal
 
+import onnxruntime as ort
+import torch
 from fastembed import LateInteractionTextEmbedding, SparseTextEmbedding, TextEmbedding
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     FieldCondition,
     Filter,
+    Fusion,
+    FusionQuery,
     MatchValue,
     Prefetch,
     SparseVector,
@@ -17,17 +21,17 @@ from qdrant_client.models import (
 QDRANT_URL = "http://localhost:6333"
 QDRANT_COLLECTION = "construction_docs"
 
-DENSE_MODEL = "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
+DENSE_MODEL = "intfloat/multilingual-e5-large"
 SPARSE_MODEL = "Qdrant/bm25"
 COLBERT_MODEL = "colbert-ir/colbertv2.0"
 
-DENSE_SIZE = 384
-DENSE_SIZE = 768
+DENSE_SIZE = 1024
 
-PROVIDERS = ["CUDAExecutionProvider"]
 
+PROVIDERS = (
+    ["CUDAExecutionProvider"] if torch.cuda.is_available() else ["CPUExecutionProvider"]
+)
 SearchMode = Literal["hybrid", "dense", "sparse"]
-import onnxruntime as ort
 
 print(ort.get_available_providers())
 # ==================================
@@ -158,10 +162,9 @@ class QdrantRetriever:
                                     -> ColBERT MaxSim rerank → top_k
         Prefetch sparse (prefetch_k)
         """
-        dense_vec = list(get_dense_model().embed([query]))[0].tolist()
-        sparse_emb = list(get_sparse_model().embed([query]))[0]
-        colbert_vec = list(get_colbert_model().embed([query]))[0].tolist()
-
+        dense_vec = list(get_dense_model().embed(["query: " + query]))[0].tolist()
+        sparse_emb = list(get_sparse_model().embed(["query: " + query]))[0]
+        colbert_vec = list(get_colbert_model().embed(["query: " + query]))[0].tolist()
         hits = self.client.query_points(
             collection_name=self.collection,
             prefetch=[
@@ -169,7 +172,7 @@ class QdrantRetriever:
                 Prefetch(
                     query=dense_vec,
                     using="dense",
-                    limit=prefetch_k,
+                    limit=prefetch_k // 2,
                     filter=qdrant_filter,
                 ),
                 # keyword recall
@@ -193,11 +196,12 @@ class QdrantRetriever:
         return [self._hit_to_result(h) for h in hits]
 
     def _search_dense(self, query, top_k, qdrant_filter) -> list[RetrievalResult]:
-        vec = list(get_dense_model().embed([query]))[0].tolist()
+        vec = list(get_dense_model().embed(["query: " + query]))[0].tolist()
         result = self.client.query_points(
             collection_name=self.collection,
             query=vec,
             using="dense",
+            limit=top_k,
             query_filter=qdrant_filter,
             with_payload=True,
         )

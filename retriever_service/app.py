@@ -1,5 +1,3 @@
-import random
-from dataclasses import dataclass
 from typing import Literal
 
 import streamlit as st
@@ -33,7 +31,7 @@ with st.sidebar:
         index=0,
         help=(
             "**hybrid** — dense + sparse Prefetch → ColBERT rerank (рекомендуется)\n\n"
-            "**dense** — только all-MiniLM-L6-v2 (ANN).\n\n"
+            "**dense** — только multilingual-mpnet-base-v2 (ANN).\\n\\n"
             "**sparse** — только BM25 (ключевые слова)."
         ),
     )
@@ -87,7 +85,9 @@ with st.sidebar:
     )
 
     st.divider()
-    st.caption(f"🔗 `{retriever.collection}`\n\n📦 MiniLM · BM25 · ColBERTv2")
+    st.caption(
+        f"🔗 `{retriever.collection}`\\n\\n📦 mpnet-multilingual · BM25 · ColBERTv2"
+    )
 
 # ── Основной контент ──────────────────────────────────────────────────────────
 st.title("🏗️ Поиск по нормативной базе")
@@ -127,7 +127,7 @@ if search_btn and query.strip():
         query=query,
         mode=mode,
         top_k=top_k,
-        prefetch_k=prefetch_k,
+        prefetch_k=prefetch_k if mode == "hybrid" else None,
         only_tables=only_tables,
         filename_filter=filename_filter,
     )
@@ -155,7 +155,11 @@ if "results" in st.session_state:
         st.info("Ничего не найдено.")
     else:
         for idx, r in enumerate(results, start=1):
-            dot = "🟢" if r.score >= 0.85 else ("🟡" if r.score >= 0.70 else "🔴")
+            mode_used = meta.get("mode", "hybrid")
+            if mode_used == "hybrid":
+                dot = "🟢" if r.score >= 15 else ("🟡" if r.score >= 8 else "🔴")
+            else:
+                dot = "🟢" if r.score >= 0.02 else ("🟡" if r.score >= 0.01 else "🔴"))
             kind = "📊 Таблица" if r.is_table else "📄 Текст"
             lbl = (
                 f"{dot} **#{idx}** &nbsp; `score: {r.score:.4f}` &nbsp;·&nbsp; "

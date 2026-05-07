@@ -37,6 +37,7 @@ from airflow.providers.http.hooks.http import HttpHook
 from airflow.sdk import dag, task
 from common.sensors.docling_sensor import DoclingBatchStatusSensor
 from common.sensors.mineru_sensor import MineruBatchStatusSensor
+from common.txt_feature.cleaner import ChunkCleaner
 from fastembed import LateInteractionTextEmbedding, SparseTextEmbedding, TextEmbedding
 from pendulum import datetime
 
@@ -124,67 +125,6 @@ def load_to_s3(
 def batch_list(items: list, batch_size: int = BATCH_SIZE) -> list[list]:
     """Split a flat list into fixed-size chunks"""
     return [items[i : i + batch_size] for i in range(0, len(items), batch_size)]
-
-
-def clean_chunk_text(text: str) -> str:
-    """
-    Remove common OCR artefacts from chunk text before vectorisation.
-
-    Normalises excess whitespace, collapses repeated newlines, fixes
-    hyphenated number ranges, and strips repeated pipe characters.
-
-    Parameters
-    ----------
-    text : str
-        Raw OCR text from a document chunk.
-
-    Returns
-    -------
-    str
-        Cleaned text, or the original value if it was empty / falsy.
-    """
-    if not text:
-        return text
-    # spaces and hyphenation
-    text = re.sub(r"[ \t]{2,}", " ", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    # Spaces around the hyphen in numbers: "4 4 4" cannot be fixed, but "44 -45" → "44-45"
-    text = re.sub(r"(\d)\s*[-–]\s*(\d)", r"\1–\2", text)
-    # OCR special characters
-    text = re.sub(r"[|]{2,}", "", text)
-    return text.strip()
-
-
-def execute_refs(text: str) -> list[str]:
-    """
-    Extract normative document references from chunk text.
-
-    Searches for Russian building-code patterns: СП, СНиП, ГОСТ,
-    paragraph numbers, table / figure references, and appendix labels.
-
-    Parameters
-    ----------
-    text : str
-        Plain text of a document chunk.
-
-    Returns
-    -------
-    list of str
-        Deduplicated list of matched reference strings.
-        Returns an empty list when no patterns are found.
-    """
-    patterns = [
-        r"[Сс][Пп]\s*\d+[.\d]*"  # СП 63.13330
-        r"[СсГг][НнОо][ИиСс][ПпТт]\s*[\d.\-]+"  # СНиП, ГОСТ
-        r"[Пп]\.?\s*\d+[\.\d]*"  # п. 3.45
-        r"[Тт]абл(?:ица|\.)\s*\d+",  # таблица 7 / табл. 7
-        r"[Рр]ис(?:унок|\.)\s*\d+",  # рисунок 3
-        r"[Пп]риложени[еяй]\s*[А-ЯA-Z\d]+",  # приложение А
-    ]
-    refs = []
-    for pat in patterns:
-        refs.extend(re.findall(pat, text))
-    return list(set(refs))
 
 
 PROVIDERS = (
@@ -708,11 +648,7 @@ def batch_pipeline():
                 Ссылки извлекаются из исходного текста и сохраняются в payload,
                 что позволяет впоследствии строить граф связей между нормами.
                 """
-                all_enriched: list[dict] = []
-                for chunk in text_chunks + table_chunks:
-                    chunk["is_table"] = chunk.get("is_table", False)
-                    chunk["refs"] = execute_refs(chunk.get("text", ""))
-                    all_enriched.append(chunk)
+                all_enriched = ChunkCleaner.process(text_chunks + table_chunks)
 
                 json_path = f"/tmp/{stem}.json"
                 del_file(json_path)
@@ -723,7 +659,9 @@ def batch_pipeline():
                     hook=hook_minio, filepath=json_path, prefix=DEV_DATA_DOCLING_JSON
                 )
                 out_paths.append(json_path)
-                logging.info(f">>> Saved {len(doc_chunks)} chunks -> {json_path}")
+                logging.info(
+                    f">>> Saved {len(all_enriched)} chunks (was {len(doc_chunks)}) -> {json_path}"
+                )
 
         return out_paths
 
@@ -745,6 +683,7 @@ def batch_pipeline():
         from qdrant_client import QdrantClient
         from qdrant_client.models import (
             Distance,
+            HnswConfigDiff,
             Modifier,
             MultiVectorComparator,
             MultiVectorConfig,
@@ -772,6 +711,7 @@ def batch_pipeline():
                     multivector_config=MultiVectorConfig(
                         comparator=MultiVectorComparator.MAX_SIM,
                     ),
+                    hnsw_config=HnswConfigDiff(m=0),
                 ),
             },
             sparse_vectors_config={
@@ -854,16 +794,25 @@ def batch_pipeline():
                 # ----- 1) Batching and Cheaning text into chanks -----
                 enc_batch = chunks[enc_start : enc_start + QDRANT_ENCODE_BATCH]
                 texts = [
-                    "passage: " + clean_chunk_text(c.get("text", "")) for c in enc_batch
+                    ChunkCleaner.strip_heading_prefix(
+                        c.get("text") or "", c.get("headings") or []
+                    )
+                    for c in enc_batch
                 ]
 
                 # ----- 2) Vectors -----
-                dense_vecs = list(dense_model.embed(texts))  # list[ndarray(384,)]
-                sparse_vecs = list(sparse_model.embed(texts))  # list[SparseEmbedding]
+                prefixed_texts = ["passage: " + t for t in texts]
+                dense_vecs = list(
+                    dense_model.embed(prefixed_texts)
+                )  # list[ndarray(384,)]
+                sparse_vecs = list(
+                    sparse_model.embed(prefixed_texts)
+                )  # list[SparseEmbedding]
                 colbert_vecs = list(
                     colbert_model.embed(texts)
                 )  # list[ndarray(n_tok, 128)]
-                # list[ndarray(n_tokens, 128)] — рахмер матрицы разный для каждого чанка
+                # list[ndarray(n_tokens, 128)] — рахмер матрицы разный
+                # для каждого чанка
 
                 # ----- 3) Build PointStruct list -----
                 points: list[PointStruct] = []
@@ -896,6 +845,7 @@ def batch_pipeline():
                                     "text", ""
                                 ),  # оригинал для отображения
                                 "chunk_index": chunk.get("chunk_index"),
+                                "num_tokens": chunk.get("num_tokens", 0),
                                 "headings": chunk.get(
                                     "headings", []
                                 ),  # оригинал для отображения
