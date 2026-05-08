@@ -1,7 +1,7 @@
 x-airflow-common: &airflow-common
-    # build:
-    #     context: .
-    #     dockerfile: ./docker/AirFlow/Dockerfile
+    build:
+        context: .
+        dockerfile: docker/AirFlow/Dockerfile
     image: ${AIRFLOW_IMAGE_NAME:-airflow-3.2_cuda-12.9_python-3.12:latest}
     env_file:
         - .env
@@ -16,24 +16,12 @@ x-airflow-common: &airflow-common
         AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
         AIRFLOW__CORE__LOAD_EXAMPLES: "false"
         AIRFLOW__CORE__EXECUTION_API_SERVER_URL: "http://airflow-apiserver:8080/execution/"
-
+        AIRFLOW_CONFIG: /opt/airflow/config/airflow.cfg
         AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
         PYTHONPATH: /opt/airflow/dags:/opt/airflow/plugins:/opt/airflow
-
-        AIRFLOW__CELERY__WORKER_LOG_SERVER_HOST: "airflow-worker"
-        AIRFLOW__CELERY__WORKER_LOG_SERVER_PORT: "8793"
-        AIRFLOW__WEBSERVER__BASE_URL: "http://localhost:8080"
         # Connections
         # AIRFLOW_CONN_MINIO: "aws://minioadmin:minioadmin@minio:9000?endpoint_url=http%3A%2F%2Fminio%3A9000"
         # AIRFLOW_CONN_QDRANT: "http://@qdrant:6333"
-
-    volumes:
-        - ./airflow/dags:/opt/airflow/dags
-        - ./airflow/logs:/opt/airflow/logs
-        - ./airflow/config:/opt/airflow/config
-        - ./airflow/plugins:/opt/airflow/plugins
-
-    user: "${AIRFLOW_UID:-50000}:0"
 
     depends_on: &airflow-common-depends-on
         postgres:
@@ -224,8 +212,6 @@ services:
         restart: always
         depends_on:
             <<: *airflow-common-depends-on
-            airflow-init:
-                condition: service_completed_successfully
 
     airflow-scheduler:
         <<: *airflow-common
@@ -239,8 +225,6 @@ services:
         restart: always
         depends_on:
             <<: *airflow-common-depends-on
-            airflow-init:
-                condition: service_completed_successfully
 
     airflow-dag-processor:
         <<: *airflow-common
@@ -258,8 +242,6 @@ services:
         restart: always
         depends_on:
             <<: *airflow-common-depends-on
-            airflow-init:
-                condition: service_completed_successfully
 
     airflow-worker:
         <<: *airflow-common
@@ -269,19 +251,21 @@ services:
         ports:
             - "8793:8793"
         volumes:
-            - ./airflow/dags:/opt/airflow/dags
-            - ./airflow/logs:/opt/airflow/logs
-            - ./airflow/config:/opt/airflow/config
-            - ./airflow/plugins:/opt/airflow/plugins
             - /usr/local/cuda/lib64:/usr/local/cuda/lib64:ro
-            - ./data/fastembed_cache:/root/.cache/fastembed
-            - ./data/huggingface_cache:/root/.cache/huggingface
+            - ./data/fastembed_cache:/opt/airflow/cache/fastembed
+            - ./data/huggingface_cache:/opt/airflow/cache/huggingface
+            - ./data/cache_airflow:/opt/airflow/cache
         environment:
             <<: *airflow-common-env
             DUMB_INIT_SETSID: "0"
             NVIDIA_VISIBLE_DEVICES: "all"
             NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
             LD_LIBRARY_PATH: "/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu"
+            HF_HOME: /opt/airflow/cache/huggingface
+            FASTEMBED_CACHE_PATH: /opt/airflow/cache/fastembed
+            AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+            AIRFLOW__CORE__PLUGINS_FOLDER: /opt/airflow/plugins
+            AIRFLOW__CORE__BASE_LOG_FOLDER: /opt/airflow/logs
         deploy:
             resources:
                 reservations:
@@ -299,10 +283,6 @@ services:
         restart: always
         depends_on:
             <<: *airflow-common-depends-on
-            airflow-apiserver:
-                condition: service_healthy
-            airflow-init:
-                condition: service_completed_successfully
 
     airflow-triggerer:
         <<: *airflow-common
@@ -318,36 +298,6 @@ services:
             timeout: 10s
             retries: 5
         restart: always
-        depends_on:
-            <<: *airflow-common-depends-on
-            airflow-init:
-                condition: service_completed_successfully
-
-    airflow-init:
-        <<: *airflow-common
-        container_name: airflow-init
-        entrypoint: /bin/bash
-        command:
-            - -c
-            - |
-                mkdir -p /opt/airflow/{logs,dags,plugins,config}
-                chown -R "${AIRFLOW_UID:-50000}:0" /opt/airflow/logs \
-                    /opt/airflow/dags \
-                    /opt/airflow/plugins \
-                    /opt/airflow/config
-                airflow db migrate
-                airflow users create \
-                    --username airflow \
-                    --password airflow \
-                    --firstname Airflow \
-                    --lastname Admin \
-                    --role Admin \
-                    --email airflow@example.com || true
-                airflow connections import /opt/airflow/config/connections.yaml
-                echo "Airflow init done."
-        environment:
-            <<: *airflow-common-env
-        user: "0:0"
 
     flower:
         <<: *airflow-common
@@ -363,8 +313,6 @@ services:
         restart: always
         depends_on:
             <<: *airflow-common-depends-on
-            airflow-init:
-                condition: service_completed_successfully
     warehouse-postgres:
         image: postgres:16
         environment:

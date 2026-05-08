@@ -14,35 +14,48 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     libpq-dev \
     build-essential \
+    gosu \
   && rm -f /usr/lib/python3.12/EXTERNALLY-MANAGED \
-  && rm -rf /var/lib/apt/lists/*
+  && rm -rf /var/lib/apt/lists/* \
+  && gosu nobody true
 
 RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.12 1 \
   && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1
 
 ARG AIRFLOW_VERSION=3.2.0
 ARG PYTHON_VERSION=3.12
+ARG AIRFLOW_UID=50000
 
-COPY requirements.txt /requirements.txt
-
+# Install Airflow core
 RUN pip install --no-cache-dir uv \
   && uv pip install --no-cache --system \
       "apache-airflow[celery,postgres,redis,fab]==${AIRFLOW_VERSION}" \
       --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-${AIRFLOW_VERSION}/constraints-${PYTHON_VERSION}.txt" \
-  && uv pip install --no-cache --system -r /requirements.txt \
   && pip uninstall -y onnxruntime onnxruntime-gpu 2>/dev/null || true \
   && uv pip install --no-cache --system onnxruntime-gpu \
-      --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/
+      --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/ \
+  && pip install --no-cache-dir FlagEmbedding
 
-ARG AIRFLOW_UID=50000
+COPY requirements.txt /requirements.txt
+RUN uv pip install --no-cache --system -r /requirements.txt 2>/dev/null || true
+
 RUN useradd -m -u ${AIRFLOW_UID} -s /bin/bash airflow \
   && mkdir -p /opt/airflow/{dags,logs,plugins,config} \
-  && chown -R airflow:0 /opt/airflow \
-  && chmod -R 775 /opt/airflow
+  && chown -R ${AIRFLOW_UID}:0 /opt/airflow \
+  && chmod -R g+rwX /opt/airflow
 
-USER airflow
+COPY airflow/dags /opt/airflow/dags
+COPY airflow/plugins /opt/airflow/plugins
+COPY airflow/config /opt/airflow/config
+
+RUN mkdir -p /opt/airflow/logs
+
+RUN chown -R airflow:0 /opt/airflow/dags /opt/airflow/plugins /opt/airflow/config /opt/airflow/logs \
+  && chmod -R g+rwX /opt/airflow/dags /opt/airflow/plugins /opt/airflow/config /opt/airflow/logs
+
+COPY docker/AirFlow/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
 WORKDIR /opt/airflow
-
-# Переопределение nnidea entrypoint
-ENTRYPOINT ["airflow"]
-CMD ["--help"]
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["airflow", "--help"]

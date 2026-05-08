@@ -7,6 +7,7 @@ from typing import Literal
 import onnxruntime as ort
 import torch
 from fastembed import LateInteractionTextEmbedding, SparseTextEmbedding, TextEmbedding
+from FlagEmbedding import BGEM3FlagModel
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     FieldCondition,
@@ -20,10 +21,19 @@ from qdrant_client.models import (
 
 QDRANT_URL = "http://localhost:6333"
 QDRANT_COLLECTION = "construction_docs"
+# https://huggingface.co/BAAI/bge-m3
 
-DENSE_MODEL = "intfloat/multilingual-e5-large"
-SPARSE_MODEL = "Qdrant/bm25"
-COLBERT_MODEL = "colbert-ir/colbertv2.0"
+BGE_M3_MODEL = "BAAI/bge-m3"
+
+
+@lru_cache(maxsize=1)
+def get_bge_m3() -> BGEM3FlagModel:
+    return BGEM3FlagModel(
+        BGE_M3_MODEL,
+        use_fp16=torch.cuda.is_available(),
+        device="cuda" if torch.cuda.is_available() else "cpu",
+    )
+
 
 DENSE_SIZE = 1024
 
@@ -37,21 +47,6 @@ print(ort.get_available_providers())
 # ==================================
 # Singleton-models
 # ==================================
-
-
-@lru_cache(maxsize=1)
-def get_dense_model() -> TextEmbedding:
-    return TextEmbedding(DENSE_MODEL, providers=PROVIDERS)
-
-
-@lru_cache(maxsize=1)
-def get_sparse_model() -> SparseTextEmbedding:
-    return SparseTextEmbedding(SPARSE_MODEL)
-
-
-@lru_cache(maxsize=1)
-def get_colbert_model() -> LateInteractionTextEmbedding:
-    return LateInteractionTextEmbedding(COLBERT_MODEL, providers=PROVIDERS)
 
 
 @dataclass
@@ -162,9 +157,18 @@ class QdrantRetriever:
                                     -> ColBERT MaxSim rerank → top_k
         Prefetch sparse (prefetch_k)
         """
-        dense_vec = list(get_dense_model().embed(["query: " + query]))[0].tolist()
-        sparse_emb = list(get_sparse_model().embed(["query: " + query]))[0]
-        colbert_vec = list(get_colbert_model().embed(["query: " + query]))[0].tolist()
+        model = get_bge_m3()
+        output = model.encode(
+            [query],
+            return_dense=True,
+            return_sparse=True,
+            return_colbert_vecs=True,
+        )
+
+        dense_vec = output["dense_vecs"][0].tolist()
+        lw = output["lexical_weights"][0]
+        colbert_vec = output["colbert_vecs"][0].tolist()
+
         hits = self.client.query_points(
             collection_name=self.collection,
             prefetch=[
@@ -178,8 +182,8 @@ class QdrantRetriever:
                 # keyword recall
                 Prefetch(
                     query=SparseVector(
-                        indices=sparse_emb.indices.tolist(),
-                        values=sparse_emb.values.tolist(),
+                        indices=[int(k) for k in lw.keys()],
+                        values=[float(v) for v in lw.values()],
                     ),
                     using="sparse",
                     limit=prefetch_k,
@@ -195,30 +199,30 @@ class QdrantRetriever:
 
         return [self._hit_to_result(h) for h in hits]
 
-    def _search_dense(self, query, top_k, qdrant_filter) -> list[RetrievalResult]:
-        vec = list(get_dense_model().embed(["query: " + query]))[0].tolist()
-        result = self.client.query_points(
-            collection_name=self.collection,
-            query=vec,
-            using="dense",
-            limit=top_k,
-            query_filter=qdrant_filter,
-            with_payload=True,
-        )
-        return [self._hit_to_result(h) for h in result.points]
+    # def _search_dense(self, query, top_k, qdrant_filter) -> list[RetrievalResult]:
+    #     vec = list(get_dense_model().embed(["query: " + query]))[0].tolist()
+    #     result = self.client.query_points(
+    #         collection_name=self.collection,
+    #         query=vec,
+    #         using="dense",
+    #         limit=top_k,
+    #         query_filter=qdrant_filter,
+    #         with_payload=True,
+    #     )
+    #     return [self._hit_to_result(h) for h in result.points]
 
-    def _search_sparse(self, query, top_k, qdrant_filter) -> list[RetrievalResult]:
+    # def _search_sparse(self, query, top_k, qdrant_filter) -> list[RetrievalResult]:
 
-        sv = list(get_sparse_model().embed([query]))[0]
-        result = self.client.query_points(
-            collection_name=self.collection,
-            query=SparseVector(
-                indices=sv.indices.tolist(),
-                values=sv.values.tolist(),
-            ),
-            using="sparse",
-            limit=top_k,
-            query_filter=qdrant_filter,
-            with_payload=True,
-        )
-        return [self._hit_to_result(h) for h in result.points]
+    #     sv = list(get_sparse_model().embed([query]))[0]
+    #     result = self.client.query_points(
+    #         collection_name=self.collection,
+    #         query=SparseVector(
+    #             indices=sv.indices.tolist(),
+    #             values=sv.values.tolist(),
+    #         ),
+    #         using="sparse",
+    #         limit=top_k,
+    #         query_filter=qdrant_filter,
+    #         with_payload=True,
+    #     )
+    #     return [self._hit_to_result(h) for h in result.points]

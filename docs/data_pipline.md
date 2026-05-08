@@ -211,3 +211,4 @@ QDRANT_UPSERT_BATCH = 32    # точек за один upsert запрос
 - [ ] Разгрузить save_docling_results
 - [ ] Оптимизация docker images.
 - [ ] Автоматическое создание коннектов Airflow
+- [ ] Вынести Qdrant в отдельный сервис что бы облечить образ Airflow

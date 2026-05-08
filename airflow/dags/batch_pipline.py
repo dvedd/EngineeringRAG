@@ -39,6 +39,7 @@ from common.sensors.docling_sensor import DoclingBatchStatusSensor
 from common.sensors.mineru_sensor import MineruBatchStatusSensor
 from common.txt_feature.cleaner import ChunkCleaner
 from fastembed import LateInteractionTextEmbedding, SparseTextEmbedding, TextEmbedding
+from FlagEmbedding import BGEM3FlagModel
 from pendulum import datetime
 
 RAG_DATA_BUCKET = "ragfiles"
@@ -50,13 +51,11 @@ BATCH_SIZE = 16
 
 QDRANT_URL = "http://qdrant:6333"
 QDRANT_COLLECTION = "construction_docs"
-QDRANT_DENSE_MODEL = "intfloat/multilingual-e5-large"
-# QDRANT_DENSE_MODEL = "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
-QDRANT_COLBERT_MODEL = "colbert-ir/colbertv2.0"
+BGE_M3_MODEL = "BAAI/bge-m3"
 QDRANT_VECTOR_SIZE = 1024
 QDRANT_ENCODE_BATCH = 16
 QDRANT_UPSERT_BATCH = 32
-QDRANT_COLBERT_SIZE = 128
+QDRANT_COLBERT_SIZE = 1024
 
 
 # ============================================================
@@ -133,18 +132,12 @@ PROVIDERS = (
 
 
 @lru_cache(maxsize=1)
-def get_dense_model() -> TextEmbedding:
-    return TextEmbedding(QDRANT_DENSE_MODEL, providers=PROVIDERS)
-
-
-@lru_cache(maxsize=1)
-def get_sparse_model() -> SparseTextEmbedding:
-    return SparseTextEmbedding("Qdrant/bm25")  # BM25 — CPU-only, памяти мало
-
-
-@lru_cache(maxsize=1)
-def get_colbert_model() -> LateInteractionTextEmbedding:
-    return LateInteractionTextEmbedding(QDRANT_COLBERT_MODEL, providers=PROVIDERS)
+def get_bge_m3() -> BGEM3FlagModel:
+    return BGEM3FlagModel(
+        BGE_M3_MODEL,
+        use_fp16=torch.cuda.is_available(),  # fp16 for gpu, fp32 for cpu
+        device="cuda" if torch.cuda.is_available() else "cpu",
+    )
 
 
 # ============================================================
@@ -770,10 +763,7 @@ def batch_pipeline():
             url=QDRANT_URL,
             timeout=120,
         )
-
-        dense_model = get_dense_model()
-        sparse_model = get_sparse_model()
-        colbert_model = get_colbert_model()
+        model = get_bge_m3()
         total_upserted = 0
 
         for json_path in docling_json_paths:
@@ -795,24 +785,25 @@ def batch_pipeline():
                 enc_batch = chunks[enc_start : enc_start + QDRANT_ENCODE_BATCH]
                 texts = [
                     ChunkCleaner.strip_heading_prefix(
-                        c.get("text") or "", c.get("headings") or []
+                        c.get("text", ""), c.get("headings", [])
                     )
                     for c in enc_batch
                 ]
 
                 # ----- 2) Vectors -----
-                prefixed_texts = ["passage: " + t for t in texts]
-                dense_vecs = list(
-                    dense_model.embed(prefixed_texts)
-                )  # list[ndarray(384,)]
-                sparse_vecs = list(
-                    sparse_model.embed(prefixed_texts)
-                )  # list[SparseEmbedding]
-                colbert_vecs = list(
-                    colbert_model.embed(texts)
-                )  # list[ndarray(n_tok, 128)]
-                # list[ndarray(n_tokens, 128)] — рахмер матрицы разный
-                # для каждого чанка
+                output = model.encode(
+                    texts,
+                    batch_size=QDRANT_ENCODE_BATCH,
+                    max_length=512,
+                    return_dense=True,
+                    return_sparse=True,
+                    return_colbert_vecs=True,
+                )
+                dense_vecs = output["dense_vecs"]  # ndarray (B, 1024)
+                lexical_vecs = output[
+                    "lexical_weights"
+                ]  # list[dict[token_id → weight]]
+                colbert_vecs = output["colbert_vecs"]  # list[ndarray(n_tok, 1024)]
 
                 # ----- 3) Build PointStruct list -----
                 points: list[PointStruct] = []
@@ -826,16 +817,17 @@ def batch_pipeline():
                         )
                     )
 
-                    sv = sparse_vecs[i]
-                    cv = colbert_vecs[i]
+                    lw = lexical_vecs[i]  # dict {token_id_str: weight}
+                    sparse_indices = [int(k) for k in lw.keys()]
+                    sparse_values = [float(v) for v in lw.values()]
                     points.append(
                         PointStruct(
                             id=point_id,
                             vector={
                                 "dense": dense_vecs[i].tolist(),
                                 "sparse": SparseVector(
-                                    indices=sv.indices.tolist(),
-                                    values=sv.values.tolist(),
+                                    indices=sparse_indices,
+                                    values=sparse_values,
                                 ),
                                 # ColBERT: матрица (n_tokens × 128) → list[list[float]]
                                 "colbert": cv.tolist(),

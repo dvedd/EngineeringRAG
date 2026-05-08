@@ -2,7 +2,6 @@
 qdrant-client
 sentence_transformers
 fastembed
-torch
 pendulum
 apache-airflow
 apache-airflow-providers-amazon
