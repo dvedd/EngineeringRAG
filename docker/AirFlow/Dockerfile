@@ -24,7 +24,8 @@ RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.12 1 \
 
 ARG AIRFLOW_VERSION=3.2.0
 ARG PYTHON_VERSION=3.12
-ARG AIRFLOW_UID=50000
+ARG AIRFLOW_UID=1000
+ARG AIRFLOW_GID=1000
 
 # Install Airflow core
 RUN pip install --no-cache-dir uv \
@@ -39,9 +40,10 @@ RUN pip install --no-cache-dir uv \
 COPY requirements.txt /requirements.txt
 RUN uv pip install --no-cache --system -r /requirements.txt 2>/dev/null || true
 
-RUN useradd -m -u ${AIRFLOW_UID} -s /bin/bash airflow \
+RUN groupadd -g ${AIRFLOW_GID} airflow 2>/dev/null || true \
+  && getent passwd ${AIRFLOW_UID} > /dev/null 2>&1 || useradd -m -u ${AIRFLOW_UID} -g ${AIRFLOW_GID} -s /bin/bash airflow \
   && mkdir -p /opt/airflow/{dags,logs,plugins,config} \
-  && chown -R ${AIRFLOW_UID}:0 /opt/airflow \
+  && chown -R ${AIRFLOW_UID}:${AIRFLOW_GID} /opt/airflow \
   && chmod -R g+rwX /opt/airflow
 
 COPY airflow/dags /opt/airflow/dags
@@ -50,7 +52,7 @@ COPY airflow/config /opt/airflow/config
 
 RUN mkdir -p /opt/airflow/logs
 
-RUN chown -R airflow:0 /opt/airflow/dags /opt/airflow/plugins /opt/airflow/config /opt/airflow/logs \
+RUN chown -R ${AIRFLOW_UID}:${AIRFLOW_GID} /opt/airflow/dags /opt/airflow/plugins /opt/airflow/config /opt/airflow/logs \
   && chmod -R g+rwX /opt/airflow/dags /opt/airflow/plugins /opt/airflow/config /opt/airflow/logs
 
 COPY docker/AirFlow/entrypoint.sh /entrypoint.sh

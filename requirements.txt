@@ -7,7 +7,7 @@ uvicorn[standard]
 pydantic
 python-dotenv
 requests
-
+FlagEmbedding
 # LangChain
 langchain
 langchain-openai

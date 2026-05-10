@@ -1,6 +1,4 @@
-FROM quay.io/docling-project/docling-serve-cpu:latest
-
-USER root
+FROM quay.io/docling-project/docling-serve-cu130:main
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         tesseract-ocr tesseract-ocr-rus tesseract-ocr-eng wget ca-certificates \

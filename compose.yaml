@@ -5,6 +5,7 @@ x-airflow-common: &airflow-common
     image: ${AIRFLOW_IMAGE_NAME:-airflow-3.2_cuda-12.9_python-3.12:latest}
     env_file:
         - .env
+    user: "${AIRFLOW_UID:-1000}:${AIRFLOW_GID:-1000}"
     environment: &airflow-common-env
         AIRFLOW__CORE__EXECUTOR: CeleryExecutor
         AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
