@@ -207,6 +207,7 @@ services:
                   --lastname User \
                   --role Admin \
                   --email admin@example.com || true
+                airflow connections import /opt/airflow/config/connections.yaml
         restart: "no"
         depends_on:
             <<: *airflow-common-depends-on
@@ -276,6 +277,10 @@ services:
         ports:
             - "8793:8793"
         volumes:
+            - ./airflow/dags:/opt/airflow/dags
+            - ./airflow/logs:/opt/airflow/logs
+            - ./airflow/plugins:/opt/airflow/plugins
+            - ./airflow/config:/opt/airflow/config
             - /usr/local/cuda/lib64:/usr/local/cuda/lib64:ro
             - ./data/fastembed_cache:/opt/airflow/cache/fastembed
             - ./data/huggingface_cache:/opt/airflow/cache/huggingface
