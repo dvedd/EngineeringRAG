@@ -24,22 +24,17 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import uuid
 from collections import defaultdict
 from functools import lru_cache
 from pathlib import Path
 
 import requests
-import torch
 from airflow.providers.amazon.aws.hooks.s3 import S3Hook
 from airflow.providers.http.hooks.http import HttpHook
 from airflow.sdk import dag, task
 from common.sensors.docling_sensor import DoclingBatchStatusSensor
-from common.sensors.mineru_sensor import MineruBatchStatusSensor
 from common.txt_feature.cleaner import ChunkCleaner
-from fastembed import LateInteractionTextEmbedding, SparseTextEmbedding, TextEmbedding
-from FlagEmbedding import BGEM3FlagModel
 from pendulum import datetime
 
 RAG_DATA_BUCKET = "ragfiles"
@@ -126,13 +121,11 @@ def batch_list(items: list, batch_size: int = BATCH_SIZE) -> list[list]:
     return [items[i : i + batch_size] for i in range(0, len(items), batch_size)]
 
 
-PROVIDERS = (
-    ["CUDAExecutionProvider"] if torch.cuda.is_available() else ["CPUExecutionProvider"]
-)
-
-
 @lru_cache(maxsize=1)
-def get_bge_m3() -> BGEM3FlagModel:
+def get_bge_m3():
+    import torch
+    from FlagEmbedding import BGEM3FlagModel
+
     return BGEM3FlagModel(
         BGE_M3_MODEL,
         use_fp16=torch.cuda.is_available(),  # fp16 for gpu, fp32 for cpu
@@ -754,8 +747,14 @@ def batch_pipeline():
         from qdrant_client.models import PointStruct, SparseVector
 
         # Диагностика GPU внутри воркера
+        providers = (
+            ["CUDAExecutionProvider"]
+            if torch.cuda.is_available()
+            else ["CPUExecutionProvider"]
+        )
+        logging.info(f">>> PROVIDERS: {providers}")
         logging.info(f">>> CUDA available: {torch.cuda.is_available()}")
-        logging.info(f">>> PROVIDERS: {PROVIDERS}")
+        logging.info(f">>> PROVIDERS: {providers}")
         if torch.cuda.is_available():
             logging.info(f">>> GPU: {torch.cuda.get_device_name(0)}")
 
@@ -830,7 +829,7 @@ def batch_pipeline():
                                     values=sparse_values,
                                 ),
                                 # ColBERT: матрица (n_tokens × 128) → list[list[float]]
-                                "colbert": cv.tolist(),
+                                "colbert": colbert_vecs[i].tolist(),
                             },
                             payload={
                                 "text": chunk.get(
@@ -861,7 +860,7 @@ def batch_pipeline():
                         f"enc_offset={enc_start},"
                         f"ups_offset={ups_start})"
                     )
-                del dense_vecs, sparse_vecs, colbert_vecs, points, texts, enc_batch
+                del dense_vecs, lexical_vecs, colbert_vecs, points, texts, enc_batch
                 gc.collect()
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()

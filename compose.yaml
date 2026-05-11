@@ -8,8 +8,8 @@ x-airflow-common: &airflow-common
     user: "${AIRFLOW_UID:-1000}:${AIRFLOW_GID:-1000}"
     environment: &airflow-common-env
         AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+        AIRFLOW__API__SECRET_KEY: ${AIRFLOW__API__SECRET_KEY}
         AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
-
         AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
         AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:airflow@postgres/airflow
         AIRFLOW__CELERY__BROKER_URL: redis://:@redis:6379/0
@@ -20,10 +20,13 @@ x-airflow-common: &airflow-common
         AIRFLOW_CONFIG: /opt/airflow/config/airflow.cfg
         AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
         PYTHONPATH: /opt/airflow/dags:/opt/airflow/plugins:/opt/airflow
-        # Connections
         # AIRFLOW_CONN_MINIO: "aws://minioadmin:minioadmin@minio:9000?endpoint_url=http%3A%2F%2Fminio%3A9000"
         # AIRFLOW_CONN_QDRANT: "http://@qdrant:6333"
-
+    volumes:
+        - ./airflow/dags:/opt/airflow/dags
+        - ./airflow/logs:/opt/airflow/logs
+        - ./airflow/config:/opt/airflow/config
+        - ./airflow/plugins:/opt/airflow/plugins
     depends_on: &airflow-common-depends-on
         postgres:
             condition: service_healthy
@@ -31,8 +34,6 @@ x-airflow-common: &airflow-common
             condition: service_healthy
         minio:
             condition: service_healthy
-        # qdrant:
-        #   condition: service_started
 
 services:
     docling-serve:
@@ -59,6 +60,7 @@ services:
         restart: always
         depends_on:
             <<: *airflow-common-depends-on
+
     mineru-api:
         image: dvmed/mineru:v3.0.9
         container_name: mineru-api
@@ -68,8 +70,7 @@ services:
         environment:
             MINERU_MODEL_SOURCE: local
         entrypoint: mineru-api
-        command: --host 0.0.0.0
-            --port 8000
+        command: --host 0.0.0.0 --port 8000
         ulimits:
             memlock: -1
             stack: 67108864
@@ -102,22 +103,6 @@ services:
             - "6334:6334"
         volumes:
             - qdrant-storage:/qdrant/storage
-
-    # unstructured:
-    #     image: dved/unstructured-amd64-api:v0.1.2
-    #     container_name: unstructured
-    #     restart: unless-stopped
-    #     ports:
-    #         - "8001:8000"
-    #     depends_on:
-    #         <<: *airflow-common-depends-on
-    #     deploy:
-    #         resources:
-    #             reservations:
-    #                 devices:
-    #                     - driver: nvidia
-    #                       device_ids: ["0"]
-    #                       capabilities: [gpu]
 
     minio:
         image: minio/minio:latest
@@ -193,6 +178,39 @@ services:
             retries: 50
         restart: always
 
+    airflow-init:
+        <<: *airflow-common
+        volumes:
+            - ./airflow/dags:/opt/airflow/dags
+            - ./airflow/logs:/opt/airflow/logs
+            - ./airflow/plugins:/opt/airflow/plugins
+            - ./airflow/config:/opt/airflow/config
+            - /usr/local/cuda/lib64:/usr/local/cuda/lib64:ro
+            - ./data/fastembed_cache:/opt/airflow/cache/fastembed
+            - ./data/huggingface_cache:/opt/airflow/cache/huggingface
+            - ./data/cache_airflow:/opt/airflow/cache
+        environment:
+            <<: *airflow-common-env
+            AIRFLOW_ADMIN_USERNAME: ${AIRFLOW_ADMIN_USERNAME:-admin}
+            AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:-admin}
+            AIRFLOW_ADMIN_EMAIL: ${AIRFLOW_ADMIN_EMAIL:-admin@example.com}
+        container_name: airflow-init
+        entrypoint: /bin/bash
+        command:
+            - -c
+            - |
+                airflow db migrate && \
+                airflow users create \
+                  --username admin \
+                  --password admin \
+                  --firstname Admin \
+                  --lastname User \
+                  --role Admin \
+                  --email admin@example.com || true
+        restart: "no"
+        depends_on:
+            <<: *airflow-common-depends-on
+
     airflow-apiserver:
         <<: *airflow-common
         container_name: airflow-apiserver
@@ -213,6 +231,8 @@ services:
         restart: always
         depends_on:
             <<: *airflow-common-depends-on
+            airflow-init:
+                condition: service_completed_successfully
 
     airflow-scheduler:
         <<: *airflow-common
@@ -226,6 +246,8 @@ services:
         restart: always
         depends_on:
             <<: *airflow-common-depends-on
+            airflow-init:
+                condition: service_completed_successfully
 
     airflow-dag-processor:
         <<: *airflow-common
@@ -243,6 +265,8 @@ services:
         restart: always
         depends_on:
             <<: *airflow-common-depends-on
+            airflow-init:
+                condition: service_completed_successfully
 
     airflow-worker:
         <<: *airflow-common
@@ -284,6 +308,8 @@ services:
         restart: always
         depends_on:
             <<: *airflow-common-depends-on
+            airflow-init:
+                condition: service_completed_successfully
 
     airflow-triggerer:
         <<: *airflow-common
@@ -299,6 +325,10 @@ services:
             timeout: 10s
             retries: 5
         restart: always
+        depends_on:
+            <<: *airflow-common-depends-on
+            airflow-init:
+                condition: service_completed_successfully
 
     flower:
         <<: *airflow-common
@@ -314,6 +344,9 @@ services:
         restart: always
         depends_on:
             <<: *airflow-common-depends-on
+            airflow-init:
+                condition: service_completed_successfully
+
     warehouse-postgres:
         image: postgres:16
         environment:

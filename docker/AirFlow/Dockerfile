@@ -31,14 +31,10 @@ ARG AIRFLOW_GID=1000
 RUN pip install --no-cache-dir uv \
   && uv pip install --no-cache --system \
       "apache-airflow[celery,postgres,redis,fab]==${AIRFLOW_VERSION}" \
-      --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-${AIRFLOW_VERSION}/constraints-${PYTHON_VERSION}.txt" \
-  && pip uninstall -y onnxruntime onnxruntime-gpu 2>/dev/null || true \
-  && uv pip install --no-cache --system onnxruntime-gpu \
-      --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/ \
-  && pip install --no-cache-dir FlagEmbedding
+      --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-${AIRFLOW_VERSION}/constraints-${PYTHON_VERSION}.txt"
 
-COPY requirements.txt /requirements.txt
-RUN uv pip install --no-cache --system -r /requirements.txt 2>/dev/null || true
+COPY docker/AirFlow/requirements.txt /requirements.txt
+RUN uv pip install --no-cache --system -r /requirements.txt
 
 RUN groupadd -g ${AIRFLOW_GID} airflow 2>/dev/null || true \
   && getent passwd ${AIRFLOW_UID} > /dev/null 2>&1 || useradd -m -u ${AIRFLOW_UID} -g ${AIRFLOW_GID} -s /bin/bash airflow \
@@ -49,15 +45,18 @@ RUN groupadd -g ${AIRFLOW_GID} airflow 2>/dev/null || true \
 COPY airflow/dags /opt/airflow/dags
 COPY airflow/plugins /opt/airflow/plugins
 COPY airflow/config /opt/airflow/config
-
 RUN mkdir -p /opt/airflow/logs
 
-RUN chown -R ${AIRFLOW_UID}:${AIRFLOW_GID} /opt/airflow/dags /opt/airflow/plugins /opt/airflow/config /opt/airflow/logs \
-  && chmod -R g+rwX /opt/airflow/dags /opt/airflow/plugins /opt/airflow/config /opt/airflow/logs
+# RUN chown -R ${AIRFLOW_UID}:${AIRFLOW_GID} /opt/airflow/dags /opt/airflow/plugins /opt/airflow/config /opt/airflow/logs \
+#   && chmod -R g+rwX /opt/airflow/dags /opt/airflow/plugins /opt/airflow/config /opt/airflow/logs
 
 COPY docker/AirFlow/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
+RUN pip uninstall -y onnxruntime onnxruntime-gpu 2>/dev/null || true \
+    && uv pip install --no-cache --system onnxruntime-gpu \
+        --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/ \
+    && pip install --no-cache-dir FlagEmbedding
 WORKDIR /opt/airflow
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["airflow", "--help"]

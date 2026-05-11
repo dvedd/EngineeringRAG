@@ -1,11 +1,9 @@
 # Vector DB
 qdrant-client
-sentence_transformers
-fastembed
 pendulum
 apache-airflow
 apache-airflow-providers-amazon
-apache-airflow-providers-qdrant
+#apache-airflow-providers-qdrant
 
 # Core
 uvicorn[standard]
@@ -23,3 +21,6 @@ requests
 pyyaml
 click
 httpx
+
+# sentence_transformers
+# fastembed
