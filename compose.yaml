@@ -35,7 +35,46 @@ x-airflow-common: &airflow-common
         minio:
             condition: service_healthy
 
+x-vllm-common: &vllm-common
+    image: vllm/vllm-openai:v0.11.2
+    ipc: host
+    restart: always
+    volumes:
+        - ./data/huggingface_cache:/root/.cache/huggingface
+    environment:
+        HF_HOME: /root/.cache/huggingface
+        HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
+    deploy:
+        resources:
+            reservations:
+                devices:
+                    - driver: nvidia
+                      device_ids: ["0"]
+                      capabilities: [gpu]
+
 services:
+    vllm-light:
+        <<: *vllm-common
+        container_name: vllm-light
+        command:
+            - --model
+            - ${LIGHT_MODEL:-Qwen/Qwen3.5-4B}
+            - --served-model-name
+            - query-rewriter
+            - --gpu-memory-utilization
+            - "0.25"
+            - --max-model-len
+            - "4096"
+            - --enable-sleep-mode
+        ports:
+            - "8020:8000"
+        healthcheck:
+            test: ["CMD", "curl", "-f", "http://localhost:8020/health"]
+            interval: 15s
+            timeout: 10s
+            retries: 10
+            start_period: 60s
+
     docling-serve:
         image: quay.io/docling-project/docling-serve-cu130:main
         container_name: docling-serve
@@ -91,7 +130,7 @@ services:
         image: qdrant/qdrant:latest
         container_name: qdrant
         environment:
-            - QDRANT__SERVICE__MAX_REQUEST_SIZE_MB=128
+            - QDRANT__SERVICE__MAX_REQUEST_SIZE_MB=512
             - QDRANT__STORAGE__PERFORMANCE__MAX_SEARCH_THREADS=4
         deploy:
             resources:
