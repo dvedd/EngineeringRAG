@@ -21,6 +21,20 @@ TECHEXPERT_WATERMARKS: tuple[str, ...] = (
     r"Дополнительную информацию см\. в ярлыке\s*[«\"]Примечания[»\"][^\n]*",
 )
 
+MANNORM_PATTERNS: list[str] = [
+    r"[СсГг][НнОо][ИиСс][ПпТт]\s*[\d\.\-]+\.[\d\.]+(?:\s*\((?:пункт|п\.?|таблиц[аеу]|табл\.?)\s*[\d\.]+\))?",
+    r"[СсГг][НнОо][ИиСс][ПпТт]\s*[\d\.\-]+",  # СНиП, ГОСТ
+]
+MANTABLE_PATTERNS: list[str] = [
+    r"[Тт]абл(?:иц[аеу]|(?:иц)?\.)\s*\d+(?:\.\d+)*(?:\s*,\s*\d+(?:\.\d+)*)*\b"
+]
+
+CROSS_PATTERNS: list[str] = [
+    r"[Пп]\.?\s*\d+(?:\.\d+)*(?:\.?[дД])?",  # п. 3.45
+    r"[Рр]ис(?:унок|\.)\s*\d+(?:\.\d+)*",  # рисунок 3
+    r"[Пп]риложени[еяй]\s*[А-ЯA-Z\d]+",  # приложение А
+]
+
 
 class ChunkCleaner:
     """
@@ -61,11 +75,19 @@ class ChunkCleaner:
 
     @classmethod
     def extract_refs(cls, text: str) -> list[str]:
-        """
-        Extract normative document references from chunk text.
+        """Extract all normative references (mandatory + cross) from chunk text."""
+        refs: list[str] = []
+        for pat in MANNORM_PATTERNS + CROSS_PATTERNS:
+            refs.extend(re.findall(pat, text))
+        return list(set(refs))
 
-        Searches for Russian building-code patterns: СП, СНиП, ГОСТ,
-        paragraph numbers, table / figure references, and appendix labels.
+    @classmethod
+    def extract_refs_norms(cls, text: str) -> list[str]:
+        """
+        Extract only mandatory normative document references.
+
+        Matches external regulatory documents that must be searched
+        at 1 level of depth during retrieval: СП, СНиП, ГОСТ.
 
         Parameters
         ----------
@@ -75,19 +97,44 @@ class ChunkCleaner:
         Returns
         -------
         list of str
-            Deduplicated list of matched reference strings.
-            Returns an empty list when no patterns are found.
+            Deduplicated list of mandatory reference strings.
         """
-        patterns = [
-            r"[Сс][Пп]\s*\d+[\.\d]*",  # СП 63.13330
-            r"[СсГг][НнОо][ИиСс][ПпТт]\s*[\d\.\-]+",  # СНиП, ГОСТ
-            r"[Пп]\.?\s*\d+(?:\.\d+)*(?:\.?[дД])?",  # п. 3.45
-            r"[Тт]абл(?:иц[аеуией]|(?:иц)?\.)\s*\d+(?:\.\d+)*(?:\s*,\s*\d+(?:\.\d+)*)*\b",  # таблица 7
-            r"[Рр]ис(?:унок|\.)\s*\d+(?:\.\d+)*",  # рисунок 3
-            r"[Пп]риложени[еяй]\s*[А-ЯA-Z\d]+",  # приложение А
-        ]
         refs: list[str] = []
-        for pat in patterns:
+        for pat in MANNORM_PATTERNS:
+            refs.extend(re.findall(pat, text))
+        return list(set(refs))
+
+    @classmethod
+    def extract_refs_tables(cls, text: str) -> list[str]:
+        """
+        Extract only mandatory table
+        """
+        refs: list[str] = []
+        for pat in MANTABLE_PATTERNS:
+            refs.extend(re.findall(pat, text))
+        return list(set(refs))
+
+    @classmethod
+    def extract_refs_cross(cls, text: str) -> list[str]:
+        """
+        Extract only cross references.
+
+        Matches navigational references within the same document:
+        paragraph numbers, tables, figures, and appendix labels.
+        Reserved for future use — not used in retrieval currently.
+
+        Parameters
+        ----------
+        text : str
+            Plain text of a document chunk.
+
+        Returns
+        -------
+        list of str
+            Deduplicated list of cross-reference strings.
+        """
+        refs: list[str] = []
+        for pat in CROSS_PATTERNS:
             refs.extend(re.findall(pat, text))
         return list(set(refs))
 
@@ -219,6 +266,9 @@ class ChunkCleaner:
         for c in chunks:
             c["text"] = cls.clean_text(c.get("text", ""))
             c["refs"] = cls.extract_refs(c.get("text", ""))
+            c["refs_norms"] = cls.extract_refs_norms(c.get("text", ""))
+            c["refs_tables"] = cls.extract_refs_tables(c.get("text", ""))
+            c["refs_cross"] = cls.extract_refs_cross(c.get("text", ""))
             c["headings"] = c.get("headings", [])
             c["doc_items"] = c.get("doc_items", [])
 

@@ -374,6 +374,11 @@ def batch_pipeline():
             logging.info(f">>> Downloaded: {file_path}")
 
             # ----- submit -----
+            file_size = Path(file_path).stat().st_size
+            logging.info(
+                f">>> Submitting file to MinerU: {file_key} (size: {file_size} bytes)"
+            )
+
             with open(file_path, "rb") as f:
                 resp = requests.post(
                     "http://mineru-api:8000/tasks",
@@ -390,9 +395,21 @@ def batch_pipeline():
                         "return_content_list": "false",
                         "return_images": "false",
                     },
+                    timeout=120,
                 )
+
+            logging.info(f">>> MinerU response status: {resp.status_code}")
+            logging.info(f">>> MinerU response headers: {dict(resp.headers)}")
+
             resp.raise_for_status()
-            tid = resp.json()["task_id"]
+            response_json = resp.json()
+            logging.info(
+                f">>> MinerU full response: {json.dumps(response_json, ensure_ascii=False)}"
+            )
+
+            tid = response_json.get("task_id")
+            if not tid:
+                raise ValueError(f"Task ID not found in response: {response_json}")
             task_ids.append(tid)
             logging.info(f">>> Submitted {file_key} -> task_id: {tid}")
 
@@ -402,7 +419,7 @@ def batch_pipeline():
         return task_ids
 
     # ------------------------------------------------------------------------------------------------
-    # 4. Save MinerU results (runs AFTER sensor confirms completion)
+    # 4. Save MinerU results
     # ------------------------------------------------------------------------------------------------
 
     @task()
@@ -423,13 +440,23 @@ def batch_pipeline():
         list of str
             Absolute paths of the written ``.md`` files.
         """
+        logging.info(
+            f">>> save_mineru_results() received {len(mineru_task_ids)} task_ids"
+        )
+        logging.info(f">>> Task IDs: {mineru_task_ids}")
+
         hook_mineru = HttpHook(method="GET", http_conn_id="mineru")
         all_paths: list[str] = []
 
         for task_id in mineru_task_ids:
+            logging.info(f">>> Fetching result for task_id: {task_id}")
             req = hook_mineru.run(endpoint=f"/tasks/{task_id}/result")
+            logging.info(f">>> Result response status: {req.status_code}")
             req.raise_for_status()
             results = req.json().get("results", {})
+            logging.info(
+                f">>> Result response: {json.dumps(results, ensure_ascii=False)[:500]}..."
+            )
 
             for name, payload in results.items():
                 file_path = f"/tmp/{name}.md"
@@ -438,6 +465,7 @@ def batch_pipeline():
                 with open(file_path, "w", encoding="utf-8") as f:
                     f.write(payload["md_content"])
                 all_paths.append(file_path)
+                logging.info(f">>> Saved result to: {file_path}")
 
         logging.info(f">>> Saved {len(all_paths)} .md files from batch")
         return all_paths
@@ -836,6 +864,11 @@ def batch_pipeline():
                                 "text": chunk.get(
                                     "text", ""
                                 ),  # оригинал для отображения
+                                # Refs
+                                "refs": chunk["refs"],
+                                "refs_norms": chunk["refs_norms"],
+                                "refs_tables": chunk["refs_tables"],
+                                "refs_cross": chunk["refs_cross"],
                                 "chunk_index": chunk.get("chunk_index"),
                                 "num_tokens": chunk.get("num_tokens", 0),
                                 "headings": chunk.get(
@@ -846,7 +879,6 @@ def batch_pipeline():
                                     "filename", path.stem
                                 ),  # для фильтрации по файлу
                                 "is_table": chunk.get("is_table", False),
-                                "refs": chunk.get("refs", []),
                             },
                         )
                     )

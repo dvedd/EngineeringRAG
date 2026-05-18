@@ -47,6 +47,10 @@ class MineruBatchTrigger(BaseTrigger):
         tuple of (str, dict)
             Fully-qualified class path and a dict of constructor kwargs.
         """
+        self.log.info(
+            f"===== MineruBatchTrigger.serialize() called with {len(self.task_ids)} task_ids"
+        )
+        self.log.info(f"===== Task IDs to monitor: {self.task_ids}")
         return (
             "common.sensors.mineru_sensor.MineruBatchTrigger",
             {
@@ -100,6 +104,10 @@ class MineruBatchTrigger(BaseTrigger):
             on full success, or ``{"status": "failed", "error": "..."}`` on
             the first failure.
         """
+        self.log.info(
+            f"===== MineruBatchTrigger.run() starting with {len(self.task_ids)} task_ids"
+        )
+        self.log.info(f"===== Task IDs to monitor: {self.task_ids}")
         pending = list(self.task_ids)
         completed_results = {}
 
@@ -220,7 +228,11 @@ class MineruBatchStatusSensor(BaseSensorOperator):
         """
         if self.deferrable:
             self.log.info(
-                f"----- Deferring batch trigger for {len(self.external_task_ids)} tasks"
+                f"===== MineruBatchStatusSensor.execute() - Deferring batch trigger for {len(self.external_task_ids)} tasks"
+            )
+            self.log.info(f"===== Task IDs to monitor: {self.external_task_ids}")
+            self.log.info(
+                f"===== conn_id: {self.mineru_conn_id}, poll_interval: {self.poll_interval}"
             )
             self.defer(
                 trigger=MineruBatchTrigger(
@@ -282,5 +294,10 @@ class MineruBatchStatusSensor(BaseSensorOperator):
             raise RuntimeError(event.get("error", "Unknown batch error"))
 
         task_ids = event["task_ids"]
-        self.log.info(f"----- Batch completed: {len(task_ids)} tasks")
+        self.log.info(
+            f"===== execute_complete() - Batch completed: {len(task_ids)} tasks"
+        )
+        self.log.info(f"===== Completed task IDs: {task_ids}")
+        if "results" in event:
+            self.log.info(f"===== Results: {event['results']}")
         return task_ids  # передается в следующую задачу

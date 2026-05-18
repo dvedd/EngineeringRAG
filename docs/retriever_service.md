@@ -213,15 +213,26 @@ sparse Prefetch (prefetch_k)   ─┘
 
 ## Планируемые улучшения
 
-| ID | Название | Файл | Приоритет | Описание |
-|---|---|---|---|---|
-| **1.1** | Раздельные пороги | `app.py` | Низкий | Меньше ложных срабатываний: пороги для `hybrid`, `dense`, `sparse` разные |
-| **1.2** | Sufficiency Check | `app.py` | Низкий | Честный ответ при пустой базе: проверка `SCORE_THRESHOLD` перед показом результатов |
-| **1.3** | Нормализация refs | `pipeline` | Низкий | Разблокирует Ref Expansion: стандартизация форматов (СП 256.1325800.2016 → СП 256.1325800.2016) |
-| **1.4** | Query Router | `app.py` | Низкий | Точный поиск по номерам норм: direct lookup для `СП XX.XXX.XXX.XXX` → bypass semantic search |
-| **2.1** | Query Decomposition | `app.py` | Средний | Покрывает размытые запросы: разбиение на подзапросы и объединение результатов |
-| **2.2** | Ref Expansion | `retriever-2.py` | Средний | Ответы из связанных норм: обход графа `refs` в Qdrant |
-| **2.3** | Relevance Judge | `app.py` | Средний | Фильтрует шумовые чанки: классификатор релевантности (LLM or small cross-encoder) |
-| **3.1** | Refs mandatory/cross | `pipeline` | Средний | Умный обход ссылок: обязательные кросс-ссылки vs рекомендательные |
-| **3.2** | Topics в payload | `pipeline` | Высокий | Точная pre-filter фильтрация: добавление `topics` как indexed payload field |
-| **3.3** | Cross-encoder rerank | `retriever-2.py` | Высокий | Качество dense/sparse: BERT-based reranker вместо ColBERT для максимального качества |
+| ID | Название | Файл | Описание |
+|---|---|---|---|
+| **1.1** | Раздельные пороги | `app.py` | Меньше ложных срабатываний: пороги для `hybrid`, `dense`, `sparse` разные |
+| **1.2** | Sufficiency Check | `app.py` | Честный ответ при пустой базе: проверка `SCORE_THRESHOLD` перед показом результатов |
+| **1.3** | Нормализация refs | `pipeline` | Разблокирует Ref Expansion: стандартизация форматов (СП 256.1325800.2016 → СП 256.1325800.2016) |
+| **1.4** | Query Router | `app.py` | Точный поиск по номерам норм: direct lookup для `СП XX.XXX.XXX.XXX` → bypass semantic search |
+| **2.1** | Query Decomposition | `app.py` | Покрывает размытые запросы: разбиение на подзапросы и объединение результатов |
+| **2.2** | Ref Expansion | `retriever-2.py` | Ответы из связанных норм: обход графа `refs` в Qdrant |
+| **2.3** | Relevance Judge | `app.py` | Фильтрует шумовые чанки: классификатор релевантности (LLM or small cross-encoder) |
+| **3.1** | Refs mandatory/cross | `pipeline` | Умный обход ссылок: обязательные кросс-ссылки vs рекомендательные |
+| **3.2** | Topics в payload | `pipeline` | Точная pre-filter фильтрация: добавление `topics` как indexed payload field |
+| **3.3** | Cross-encoder rerank | `retriever-2.py` | Качество dense/sparse: BERT-based reranker вместо ColBERT для максимального качества |
+
+| ID | Название | Файл | Описание |
+|---|---|---|---|
+| **1.1** | Refs mandatory Table | `pipeline/cleaner.py` | Обязательные таблицы, должны попадать в конеткс и выводиться в ответе |
+| **1.2** | Refs mandatory/cross | `pipeline` | Умный обход ссылок: по обязательным будет вестьсь поиск на 1 уровень vs рекомендательные пока не будут использоваться|
+| **1.2** | Refs mandatory/cross | `pipeline` | Умный обход ссылок: по обязательным будет вестьсь поиск на 1 уровень vs рекомендательные пока не будут использоваться|
+---
+## Заметки по выполнению
+### Список слов, которые заставляют ссылать на норму в тексте 
+- в соответствии с
+- по

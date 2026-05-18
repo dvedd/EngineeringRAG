@@ -53,39 +53,39 @@ x-vllm-common: &vllm-common
                       capabilities: [gpu]
 
 services:
-    vllm-light:
-        <<: *vllm-common
-        container_name: vllm-light
-        environment:
-            HF_HOME: /root/.cache/huggingface
-            HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
-            VLLM_USE_V1: "0"
-        command:
-            - --model
-            - ${LIGHT_MODEL:-Qwen/Qwen3-4B}
-            - --mm-processor-cache-gb
-            - "0.5"
-            - --served-model-name
-            - query-rewriter
-            - --gpu-memory-utilization
-            - "0.9"
-            - --max-model-len
-            - "2048"
-            - --max-num-seqs
-            - "4"
-            # - --enable-sleep-mode
-            - --enforce-eager
-            - --reasoning-parser
+    # vllm-light:
+    #     <<: *vllm-common
+    #     container_name: vllm-light
+    #     environment:
+    #         HF_HOME: /root/.cache/huggingface
+    #         HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
+    #         VLLM_USE_V1: "0"
+    #     command:
+    #         - --model
+    #         - ${LIGHT_MODEL:-Qwen/Qwen3-4B}
+    #         - --mm-processor-cache-gb
+    #         - "0.5"
+    #         - --served-model-name
+    #         - query-rewriter
+    #         - --gpu-memory-utilization
+    #         - "0.9"
+    #         - --max-model-len
+    #         - "2048"
+    #         - --max-num-seqs
+    #         - "4"
+    #         # - --enable-sleep-mode
+    #         - --enforce-eager
+    #         - --reasoning-parser
             
-            - qwen3
-        ports:
-            - "8020:8000"
-        healthcheck:
-            test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-            interval: 15s
-            timeout: 10s
-            retries: 10
-            start_period: 120s
+    #         - qwen3
+    #     ports:
+    #         - "8020:8000"
+    #     healthcheck:
+    #         test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+    #         interval: 15s
+    #         timeout: 10s
+    #         retries: 10
+    #         start_period: 120s
 
     docling-serve:
         image: quay.io/docling-project/docling-serve-cu130:main
