@@ -747,7 +747,7 @@ def batch_pipeline():
         from qdrant_client import QdrantClient
         from qdrant_client.models import PointStruct, SparseVector
 
-        # Диагностика GPU внутри воркера
+        # Диагностика GPU
         providers = (
             ["CUDAExecutionProvider"]
             if torch.cuda.is_available()

@@ -24,7 +24,7 @@ def _score_dot(score: float, mode: SearchMode) -> str:
 class QueryRewriter:
     """
     Reformulates the user request using vllm-light.
-    If the model is unhealthy, return a starting query.
+    If the model is unhealthy, return the original query.
     """
 
     REWRITE_SYSTEM_PROMPT = """
@@ -40,15 +40,19 @@ class QueryRewriter:
     - Добавь релевантные синонимы и уточнения области применения, если очевидны.
     - Длина ответа — не более двух предложений.
     """
-    REWRITER_BASE_URL = "http://vllm-light:8000/v1"
+    REWRITER_BASE_URL = "http://vllm-light:8020/v1"
     REWRITER_MODEL = "query-rewriter"
 
+    def __init__(self, timeout: float = 5.0) -> None:
+        self.client = OpenAI(
+            base_url=self.REWRITER_BASE_URL,
+            api_key="",
+            timeout=timeout,
+        )
+
     def rewrite(self, query: str) -> tuple[str, bool]:
-
         try:
-            client = OpenAI(base_url=self.REWRITER_BASE_URL, api_key="")
-
-            resp = client.chat.completions.create(
+            resp = self.client.chat.completions.create(
                 model=self.REWRITER_MODEL,
                 messages=[
                     {"role": "system", "content": self.REWRITE_SYSTEM_PROMPT},
@@ -57,12 +61,13 @@ class QueryRewriter:
                 temperature=0.2,
                 max_tokens=256,
             )
-            rewritten = resp.choices[0].message.content.strip()
+            rewritten = (resp.choices[0].message.content or "").strip()
+            if not rewritten:
+                return query, False
             return rewritten, True
         except Exception as e:
             log.error("rewriter_error", query=query, error=str(e))
-
-        return query, False
+            return query, False
 
 
 class SidebarParams:
@@ -93,6 +98,13 @@ class SidebarParams:
             self.only_tables, self.filename_filter = self._render_filters()
 
             st.divider()
+            self.use_rewriter: bool = st.toggle(
+                "Переформулировать запрос",
+                value=True,
+                help="Использует vllm-light для преобразования вопроса в поисковый запрос.",
+            )
+
+            st.divider()
             st.caption(
                 f"Коллекция: `{_load_retriever().collection}`\n\n"
                 "mpnet-multilingual · BM25 · ColBERTv2"
@@ -118,6 +130,7 @@ class SidebarParams:
                 "                 ├► ColBERT rerank → top_k\n"
                 "sparse Prefetch ─┘\n"
                 "```\n"
+                "ColBERT — reranker, не ANN-индекс."
             )
         else:
             st.info(f"Режим **{self.mode}**: прямой поиск без rerank.")
@@ -165,19 +178,47 @@ class SearchBar:
 
 
 class SearchRunner:
-    """Запускает поиск и кладёт результаты в session_state."""
+    """
+    Опционально переформулирует запрос через QueryRewriter,
+    затем выполняет поиск и кладёт результаты в session_state.
+    """
 
     def __init__(self, retriever: QdrantRetriever) -> None:
         self._retriever = retriever
+        self._rewriter = QueryRewriter()
 
     def run(self, query: str, params: SidebarParams) -> None:
+        effective_query, rewritten = self._maybe_rewrite(query, params)
+        self._show_rewrite_info(query, effective_query, rewritten)
+
+        results = self._fetch_results(effective_query, params)
+        self._validate_and_store(results, query, effective_query, params)
+
+    def _maybe_rewrite(self, query: str, params: SidebarParams) -> tuple[str, bool]:
+        if not params.use_rewriter:
+            return query, False
+
+        with st.spinner("Переформулирование запроса…"):
+            return self._rewriter.rewrite(query)
+
+    @staticmethod
+    def _show_rewrite_info(original: str, effective: str, was_rewritten: bool) -> None:
+        if was_rewritten:
+            st.info(
+                f"**Исходный запрос:** {original}\n\n"
+                f"**Переформулированный:** {effective}"
+            )
+
+    def _fetch_results(
+        self, query: str, params: SidebarParams
+    ) -> list[RetrievalResult]:
         label = (
             f"hybrid + ColBERT rerank (prefetch_k={params.prefetch_k})"
             if params.mode == "hybrid"
             else params.mode
         )
         with st.spinner(f"Режим: {label}, top_k={params.top_k}…"):
-            results = self._retriever.search(
+            return self._retriever.search(
                 query=query,
                 top_k=params.top_k,
                 prefetch_k=params.prefetch_k,
@@ -186,6 +227,13 @@ class SearchRunner:
                 filename_filter=params.filename_filter,
             )
 
+    @staticmethod
+    def _validate_and_store(
+        results: list[RetrievalResult],
+        original_query: str,
+        effective_query: str,
+        params: SidebarParams,
+    ) -> None:
         if not results or results[0].score < SCORE_THRESHOLD:
             st.warning("Документ по этой теме отсутствует в базе")
             if results:
@@ -196,7 +244,8 @@ class SearchRunner:
 
         st.session_state["results"] = results
         st.session_state["meta"] = dict(
-            query=query,
+            query=original_query,
+            effective_query=effective_query,
             mode=params.mode,
             top_k=params.top_k,
             prefetch_k=params.prefetch_k if params.mode == "hybrid" else None,
@@ -218,7 +267,9 @@ class ResultsView:
 
         st.divider()
         self._render_metrics(results, meta)
-        st.markdown(f"##### Результаты для: *«{meta.get('query', '')}»*")
+
+        label_query = meta.get("effective_query") or meta.get("query", "")
+        st.markdown(f"##### Результаты для: *«{label_query}»*")
 
         if not results:
             st.info("Ничего не найдено.")

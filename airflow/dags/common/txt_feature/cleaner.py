@@ -5,7 +5,7 @@ MAX_TOKENS = 512
 MIN_WORDS = 8
 MIN_WORDS_MERGE = 15
 
-_NOISE_HEADINGS = re.compile(
+NOISE_HEADINGS = re.compile(
     r"сведения о (стандарте|своде правил|нормативном документе|документе)|"
     r"предисловие|foreword|"
     r"библиография|bibliography|"
@@ -14,7 +14,12 @@ _NOISE_HEADINGS = re.compile(
     r"термины и определения",
     re.IGNORECASE,
 )
-_FIGURE_CAPTION = re.compile(r"^\d+\s*[-–-]\s+\S+")
+FIGURE_CAPTION = re.compile(r"^\d+\s*[-–-]\s+\S+")
+TECHEXPERT_WATERMARKS: tuple[str, ...] = (
+    r"Внимание!\s*Документ включен в доказательную базу технического регламента\."
+    r"ИС\s*«Техэксперт:[^»]*»\s*Интранет[^\n]*",
+    r"Дополнительную информацию см\. в ярлыке\s*[«\"]Примечания[»\"][^\n]*",
+)
 
 
 class ChunkCleaner:
@@ -44,6 +49,10 @@ class ChunkCleaner:
         """
         if not text:
             return text
+
+        for pat in TECHEXPERT_WATERMARKS:
+            text = re.sub(pat, "", text, flags=re.IGNORECASE)
+
         text = re.sub(r"[ \t]{2,}", " ", text)
         text = re.sub(r"\n{3,}", "\n\n", text)
         text = re.sub(r"(\d)\s*[-–]\s*(\d)", r"\1–\2", text)
@@ -72,9 +81,9 @@ class ChunkCleaner:
         patterns = [
             r"[Сс][Пп]\s*\d+[\.\d]*",  # СП 63.13330
             r"[СсГг][НнОо][ИиСс][ПпТт]\s*[\d\.\-]+",  # СНиП, ГОСТ
-            r"[Пп]\.?\s*\d+[\.д]*",  # п. 3.45
-            r"[Тт]абл(?:ица|\.)\s*\d+",  # таблица 7
-            r"[Рр]ис(?:унок|\.)\s*\d+",  # рисунок 3
+            r"[Пп]\.?\s*\d+(?:\.\d+)*(?:\.?[дД])?",  # п. 3.45
+            r"[Тт]абл(?:иц[аеуией]|(?:иц)?\.)\s*\d+(?:\.\d+)*(?:\s*,\s*\d+(?:\.\d+)*)*\b",  # таблица 7
+            r"[Рр]ис(?:унок|\.)\s*\d+(?:\.\d+)*",  # рисунок 3
             r"[Пп]риложени[еяй]\s*[А-ЯA-Z\d]+",  # приложение А
         ]
         refs: list[str] = []
@@ -88,7 +97,7 @@ class ChunkCleaner:
 
     @classmethod
     def strip_heading_prefix(cls, text: str, headings: list[str]) -> str:
-        if not headings:  # ← защита от None и []
+        if not headings:
             return text or ""
         if not text:
             return ""
@@ -112,18 +121,17 @@ class ChunkCleaner:
         text = cls.strip_heading_prefix(chunk.get("text", ""), headings)
         words = text.split()
 
-        # 1. Слишком короткий
         if len(words) < MIN_WORDS:
             return True
 
-        # 2. Служебный заголовок
+        # Служебный заголовок
         for h in headings:
-            if _NOISE_HEADINGS.search(h):
+            if NOISE_HEADINGS.search(h):
                 return True
-            if _FIGURE_CAPTION.match(h):
+            if FIGURE_CAPTION.match(h):
                 return True
 
-        # 3. Обломки формул
+        # Обломки формул
         alpha_words = [re.sub(r"[^а-яёa-z]", "", w.lower()) for w in words]
         short = sum(1 for w in alpha_words if len(w) <= 2)
         if len(words) > 0 and short / len(words) > 0.6:

@@ -7,8 +7,8 @@
 | Компонент | Описание | Технологии |
 |---|---|---|
 | **Data Pipeline** | PDF → MinerU (OCR) → Docling (чанкинг) → Qdrant | Apache Airflow 3.2, MinerU, Docling |
-| **Retriever** | Гибридный поиск (dense + sparse + ColBERT) | Qdrant, BGE-M3, FastEmbed |
-| **LLM Service** | RAG-ответы на вопросы по нормам | LangChain, OpenAI (planned) |
+| **Retriever** | Гибридный поиск (dense + sparse + ColBERT) | Qdrant, BAAI/bge-m3, FastEmbed |
+| **LLM Service** | RAG-ответы на вопросы по нормам | vllm-light, OpenAI-compatible API |
 
 ---
 
@@ -38,7 +38,27 @@ Qdrant              ← гибридный векторный поиск
 | `mineru-api` | `dvmed/mineru:v3.0.9` | 8000 | OCR парсинг PDF |
 | `qdrant` | `qdrant/qdrant:latest` | 6333 | Векторная БД |
 | `minio` | `minio/minio:latest` | 9000 | Хранилище файлов (S3) |
+| `vllm-light` | `vllm/vllm-openai:v0.21.0` | 8020 | Query rewriter (LLM) |
 | `airflow-*` | custom `airflow-3.2_cuda-12.9_python-3.12:latest` | 8080/8793 | Оркестрация DAG |
+
+### Дополнительные сервисы
+
+| Компонент | Докер-образ | Порт | Назначение |
+|---|---|---|---|
+| `postgres` | `postgres:16` | 5432 | Airflow metadata |
+| `redis` | `redis:7.2-bookworm` | 6379 | Celery broker |
+| `superset` | `apache/superset:6.1.0rc2` | 5054 | Бизнес-аналитика |
+| `warehouse-postgres` | `postgres:16` | 5052 | Данные клиента |
+| `client-postgres` | `postgres:16` | 5051 | Данные клиента |
+| `pgadmin` | `dpage/pgadmin4` | 5050 | Управление БД |
+
+### Конфигурация сервисов
+
+- **MinIO Console:** `http://localhost:9001`
+- **Airflow Web UI:** `http://localhost:8080` (login: `admin` / `admin`)
+- **Superset:** `http://localhost:5054`
+- **Query Rewriter (vllm-light):** `http://localhost:8020`
+- **Retriever UI:** `http://localhost:8501`
 
 ---
 
@@ -64,9 +84,9 @@ docker compose logs -f airflow-worker
 
 ### Airflow
 
-- **Web UI:** `http://localhost:8080` (login: `airflow` / `airflow`)
+- **Web UI:** `http://localhost:8080` (login: `admin` / `admin`)
 - **DAG:** `batch_pipline` — запускается вручную (schedule=None)
-- **Connections:** `minio`, `mineru`, `docling`
+- **Connections:** `minio`, `mineru`, `docling`, `qdrant`
 
 ### Ручной запуск pipeline
 
