@@ -1,6 +1,8 @@
 import logging
 import re
 
+from transformers import AutoTokenizer
+
 MAX_TOKENS = 512
 MIN_WORDS = 8
 MIN_WORDS_MERGE = 15
@@ -21,19 +23,24 @@ TECHEXPERT_WATERMARKS: tuple[str, ...] = (
     r"Дополнительную информацию см\. в ярлыке\s*[«\"]Примечания[»\"][^\n]*",
 )
 
-MANNORM_PATTERNS: list[str] = [
+MANDATORY_PATTERNS: list[str] = [
+    # СНиП, ГОСТ
     r"[СсГг][НнОо][ИиСс][ПпТт]\s*[\d\.\-]+\.[\d\.]+(?:\s*\((?:пункт|п\.?|таблиц[аеу]|табл\.?)\s*[\d\.]+\))?",
-    r"[СсГг][НнОо][ИиСс][ПпТт]\s*[\d\.\-]+",  # СНиП, ГОСТ
-]
-MANTABLE_PATTERNS: list[str] = [
-    r"[Тт]абл(?:иц[аеу]|(?:иц)?\.)\s*\d+(?:\.\d+)*(?:\s*,\s*\d+(?:\.\d+)*)*\b"
+    r"[СсГг][НнОо][ИиСс][ПпТт]\s*[\d\.\-]+",
+    # СП — отдельно, иначе CROSS_PATTERNS съедает «П» как п.3.45
+    r"(?:(?:пункт[аеу]?|п\.)\s*[\d]+(?:\.[\d]+)*\s+)?СП\s*[\d]+(?:\.[\d]+)*(?:\s*\((?:пункт[аеу]?|п\.?|таблиц[аеу]|табл\.?)\s*[\d\.]+\))?",
+    r"СП\s*[\d]+(?:\.[\d]+)*",
+    # СанПиН
+    r"СанПи[нН]\s*[\d]+(?:\.[\d\-]+)*",
 ]
 
 CROSS_PATTERNS: list[str] = [
-    r"[Пп]\.?\s*\d+(?:\.\d+)*(?:\.?[дД])?",  # п. 3.45
-    r"[Рр]ис(?:унок|\.)\s*\d+(?:\.\d+)*",  # рисунок 3
-    r"[Пп]риложени[еяй]\s*[А-ЯA-Z\d]+",  # приложение А
+    r"[Тт]абл(?:иц[аеу]|(?:иц)?\.)\s*\d+(?:\.\d+)*(?:\s*,\s*\d+(?:\.\d+)*)*\b",
+    r"[пП]\.\s*\d+(?:\.\d+)*(?:\.?[дД])?",
+    # r"[Рр]ис(?:унок|\.)\s*\d+(?:\.\d+)*",  # рисунок 3
+    r"[Пп]риложени[еяй]\s*[А-ЯA-Z\d]+",
 ]
+TOKENIZER = AutoTokenizer.from_pretrained("BAAI/bge-m3")
 
 
 class ChunkCleaner:
@@ -44,7 +51,7 @@ class ChunkCleaner:
     """
 
     @classmethod
-    def clean_text(cls, text: str) -> str:
+    def clean_text(cls, text: str, headings: list[str]) -> str:
         """
         Remove common OCR artefacts from chunk text before vectorisation.
 
@@ -64,8 +71,15 @@ class ChunkCleaner:
         if not text:
             return text
 
+        text = cls.normalize_headings(text)
         for pat in TECHEXPERT_WATERMARKS:
             text = re.sub(pat, "", text, flags=re.IGNORECASE)
+
+        if headings:
+            for h in headings:
+                nh = re.escape(cls.normalize_headings(h))
+                text = re.sub(rf"^{nh}\s*\n?", "", text, flags=re.MULTILINE)
+        text = "\n".join(line.strip() for line in text.splitlines() if line.strip())
 
         text = re.sub(r"[ \t]{2,}", " ", text)
         text = re.sub(r"\n{3,}", "\n\n", text)
@@ -74,55 +88,27 @@ class ChunkCleaner:
         return text.strip()
 
     @classmethod
-    def extract_refs(cls, text: str) -> list[str]:
-        """Extract all normative references (mandatory + cross) from chunk text."""
+    def normalize_headings(cls, s: str) -> str:
+        return s.replace("–", "-").replace("—", "-").replace("\xa0", " ")
+
+    @classmethod
+    def extract_mandatory_refs(cls, text: str) -> list[str]:
+        """
+        Extract all mandatoryreferences from chunk text
+        По обязательным будет вестиcь углубленный поиск для углубдения контекста
+        """
         refs: list[str] = []
-        for pat in MANNORM_PATTERNS + CROSS_PATTERNS:
+        for pat in MANDATORY_PATTERNS + CROSS_PATTERNS:
             refs.extend(re.findall(pat, text))
         return list(set(refs))
 
     @classmethod
-    def extract_refs_norms(cls, text: str) -> list[str]:
-        """
-        Extract only mandatory normative document references.
-
-        Matches external regulatory documents that must be searched
-        at 1 level of depth during retrieval: СП, СНиП, ГОСТ.
-
-        Parameters
-        ----------
-        text : str
-            Plain text of a document chunk.
-
-        Returns
-        -------
-        list of str
-            Deduplicated list of mandatory reference strings.
-        """
-        refs: list[str] = []
-        for pat in MANNORM_PATTERNS:
-            refs.extend(re.findall(pat, text))
-        return list(set(refs))
-
-    @classmethod
-    def extract_refs_tables(cls, text: str) -> list[str]:
-        """
-        Extract only mandatory table
-        """
-        refs: list[str] = []
-        for pat in MANTABLE_PATTERNS:
-            refs.extend(re.findall(pat, text))
-        return list(set(refs))
-
-    @classmethod
-    def extract_refs_cross(cls, text: str) -> list[str]:
+    def extract_cross_refs(cls, text: str) -> list[str]:
         """
         Extract only cross references.
 
-        Matches navigational references within the same document:
-        paragraph numbers, tables, figures, and appendix labels.
-        Reserved for future use — not used in retrieval currently.
-
+        Кросс метрики долджны будут попать в контекст в неизменном виде.
+        Рисунки потом будут тронсфармироваться в прямые ссылки. Mineru может созранять фото.
         Parameters
         ----------
         text : str
@@ -140,7 +126,7 @@ class ChunkCleaner:
 
     @classmethod
     def count_tokens(cls, text: str) -> int:
-        return int(len(text.split()) * 1.3)
+        return len(TOKENIZER.encode(text, add_special_tokens=False))
 
     @classmethod
     def strip_heading_prefix(cls, text: str, headings: list[str]) -> str:
@@ -158,7 +144,7 @@ class ChunkCleaner:
         """
         True if the chunk is garbage.
 
-         Criteria:
+        Criteria:
         1. Too short (< MIN_WORDS words after removing the heading-prefix)
         2. Header section (preface, bibliography, etc.)
         3. Formula fragment: >60% of tokens are Latin/Cyrillic
@@ -167,6 +153,9 @@ class ChunkCleaner:
         headings = chunk.get("headings", [])
         text = cls.strip_heading_prefix(chunk.get("text", ""), headings)
         words = text.split()
+
+        if chunk.get("is_table"):
+            return False
 
         if len(words) < MIN_WORDS:
             return True
@@ -214,21 +203,19 @@ class ChunkCleaner:
             if buffer is None:
                 buffer = {
                     **chunk,
-                    "headings": chunk.get("doc_items", []),
+                    "headings": chunk.get("headings", []),
                     "doc_items": list(chunk.get("doc_items", [])),
                 }
                 continue
 
-            same_section = buffer.get("headings") == chunk.get("headings")
+            same_section = cls.normalize_headings(
+                buffer.get("headings", [])
+            ) == cls.normalize_headings(chunk.get("headings", []))
             buf_tokens = cls.count_tokens(buffer.get("text", ""))
             new_tokens = cls.count_tokens(chunk.get("text", ""))
 
             if same_section and (buf_tokens + new_tokens) < max_tokens:
-                # Только содержательная часть без heading
-                addition = cls.strip_heading_prefix(
-                    chunk.get("text", ""), chunk.get("headings", [])
-                )
-                buffer["text"] += "\n" + addition
+                buffer["text"] += "\n" + chunk.get("text", "")
                 buffer["doc_items"].extend(chunk.get("doc_items", []))
                 buffer["refs"] = list(
                     set(buffer.get("refs", []) + chunk.get("refs", []))
@@ -236,7 +223,14 @@ class ChunkCleaner:
             else:
                 if len(buffer.get("text", "").split()) >= min_words:
                     result.append(buffer)
-                buffer = {**chunk, "doc_items": list(chunk.get("doc_items", []))}
+                    buffer = {
+                        **chunk,
+                        "headings": chunk.get("headings", []),
+                        "doc_items": list(chunk.get("doc_items", [])),
+                        "refs": list(chunk.get("refs", [])),
+                        "man_refs": list(chunk.get("man_refs", [])),
+                        "cross_refs": list(chunk.get("cross_refs", [])),
+                    }
 
         if buffer and len(buffer.get("text", "").split()) >= min_words:
             result.append(buffer)
@@ -264,11 +258,9 @@ class ChunkCleaner:
         """
         # Step 1 - 2
         for c in chunks:
-            c["text"] = cls.clean_text(c.get("text", ""))
-            c["refs"] = cls.extract_refs(c.get("text", ""))
-            c["refs_norms"] = cls.extract_refs_norms(c.get("text", ""))
-            c["refs_tables"] = cls.extract_refs_tables(c.get("text", ""))
-            c["refs_cross"] = cls.extract_refs_cross(c.get("text", ""))
+            c["text"] = cls.clean_text(c.get("text", ""), c.get("headings", []))
+            c["man_refs"] = cls.extract_mandatory_refs(c.get("text", ""))
+            c["cross_refs"] = cls.extract_cross_refs(c.get("text", ""))
             c["headings"] = c.get("headings", [])
             c["doc_items"] = c.get("doc_items", [])
 
